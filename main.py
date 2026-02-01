@@ -167,7 +167,6 @@ def register_handlers(bot_inst):
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
     def handle_selection(call):
         _, m_type, m_id = call.data.split('_')
-        # মাল্টিপল ফাইল স্টোর করার জন্য 'temp_files' ডিকশনারি
         admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id, 'temp_files': []}
         
         if m_type == 'movie':
@@ -240,15 +239,11 @@ def register_handlers(bot_inst):
         if uid not in admin_states: return
         state = admin_states[uid]
         try:
-            # ফাইল স্টোরেজ চ্যানেলে কপি করা
             sent_msg = bot_inst.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
-            
-            # ফাইলের ডিটেইলস সেভ করা
             file_label = f"{state.get('lang', '')} {state.get('qual', 'HD')}".strip()
             file_data = {'quality': file_label, 'file_id': sent_msg.message_id}
             admin_states[uid]['temp_files'].append(file_data)
 
-            # বাটন দেখানো
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("➕ Add More Quality", callback_data="add_more_qual"))
             markup.add(types.InlineKeyboardButton("✅ Finish Upload", callback_data="finish_upload"))
@@ -307,10 +302,8 @@ def register_handlers(bot_inst):
                 'cast': cast, 'director': director, 'category': auto_cat,
                 'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else ""
             }
-            # মেটাডাটা আপডেট/ইনসার্ট
             movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
 
-            # ফাইলগুলো পুশ করা
             if state['type'] == 'movie':
                 movies_col.update_one({'tmdb_id': state['tmdb_id']}, {'$push': {'files': {'$each': state['temp_files']}}})
             else:
@@ -364,7 +357,6 @@ def home():
     total = movies_col.count_documents(query_filter)
     movies = list(movies_col.find(query_filter).sort('_id', -1).skip(skip).limit(limit))
     
-    # স্লাইডারের জন্য সর্বশেষ ৬টি মুভি
     slider_movies = list(movies_col.find({}).sort('_id', -1).limit(6))
     
     pages = math.ceil(total / limit)
@@ -424,7 +416,7 @@ def admin():
         return render_template_string(ADMIN_ADD_HTML, config=config, categories=CATEGORIES)
     elif tab == 'settings':
         return render_template_string(ADMIN_SETTINGS_HTML, config=config)
-    else: # dashboard
+    else:
         stats = {
             'users': users_col.count_documents({}),
             'movies': movies_col.count_documents({})
@@ -573,20 +565,42 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates ==================
+# ================== HTML Templates (Modified Slider) ==================
 
 COMMON_STYLE = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
-    :root { --neon: #66fcf1; --dark: #0b0c10; --card: #1f2833; --text: #c5c6c7; }
+    :root { --neon: #66fcf1; --dark: #0b0c10; --card: #1f2833; --text: #c5c6c7; --duple: #00d2ff; }
     body { background: var(--dark); color: var(--text); font-family: 'Poppins', sans-serif; overflow-x: hidden; }
     
-    /* Slider Styles */
-    .hero-slider { margin-bottom: 40px; border-radius: 15px; overflow: hidden; border: 2px solid var(--neon); box-shadow: 0 0 15px rgba(102, 252, 241, 0.3); }
-    .carousel-item img { height: 450px; width: 100%; object-fit: cover; filter: brightness(0.6); }
-    .carousel-caption { background: rgba(0,0,0,0.6); border-radius: 10px; padding: 20px; border: 1px solid var(--neon); bottom: 10%; }
-    .carousel-caption h3 { color: var(--neon); font-weight: 600; }
+    /* Duple Style Slider */
+    .hero-slider { margin-bottom: 40px; position: relative; border-radius: 15px; overflow: hidden; }
+    .carousel-item { height: 500px; }
+    .carousel-item img { height: 100%; width: 100%; object-fit: cover; }
+    .carousel-item::after { 
+        content: ""; position: absolute; bottom: 0; left: 0; width: 100%; height: 100%; 
+        background: linear-gradient(to top, rgba(11, 12, 16, 1) 10%, rgba(11, 12, 16, 0.4) 50%, rgba(0,0,0,0) 100%);
+    }
+    .carousel-caption { 
+        bottom: 50px; left: 5%; text-align: left; z-index: 10; width: 60%; 
+        animation: fadeInUp 0.8s ease-in-out;
+    }
+    .carousel-caption h3 { font-size: 3rem; font-weight: 700; color: #fff; text-shadow: 0 0 10px rgba(0,0,0,0.5); margin-bottom: 10px; }
+    .carousel-caption .meta { font-size: 16px; color: var(--duple); font-weight: 600; margin-bottom: 15px; }
+    .carousel-caption p { font-size: 15px; color: #ddd; max-height: 80px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+    
+    .btn-watch { 
+        background: var(--duple); color: #fff; padding: 10px 30px; border-radius: 30px; 
+        text-decoration: none; font-weight: 600; display: inline-block; margin-top: 15px;
+        transition: 0.3s; box-shadow: 0 4px 15px rgba(0, 210, 255, 0.4);
+    }
+    .btn-watch:hover { background: #fff; color: var(--duple); transform: scale(1.05); }
 
+    .carousel-indicators [data-bs-target] { width: 12px; height: 12px; border-radius: 50%; background-color: var(--duple); margin: 0 5px; }
+
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Other Styles */
     .neon-card { background: var(--card); border: 1px solid #45a29e; border-radius: 12px; transition: 0.5s; overflow: hidden; position: relative; }
     .neon-card:hover { transform: translateY(-8px); box-shadow: 0 0 20px var(--neon); border-color: var(--neon); }
     .btn-neon { background: var(--neon); color: var(--dark); font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.3s; display: inline-block; cursor:pointer;}
@@ -604,6 +618,14 @@ COMMON_STYLE = """
     .admin-card { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 25px; }
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
     .logo-img { height: 40px; width: 40px; border-radius: 50%; object-fit: cover; margin-right: 10px; border: 1px solid var(--neon); }
+
+    @media (max-width: 768px) {
+        .sidebar { display: none; }
+        .main-content { margin-left: 0; }
+        .carousel-item { height: 350px; }
+        .carousel-caption { width: 90%; bottom: 30px; }
+        .carousel-caption h3 { font-size: 1.8rem; }
+    }
 </style>
 """
 
@@ -618,32 +640,33 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
     </form>
 </div></nav>
 
-<div class="container">
-    <!-- Slider Section -->
+<div class="container-fluid px-0">
+    <!-- Duple Style Slider Section -->
     {% if slider_movies and not query and not cat %}
-    <div id="heroSlider" class="carousel slide hero-slider" data-bs-ride="carousel">
+    <div id="heroSlider" class="carousel slide hero-slider mb-5" data-bs-ride="carousel">
+        <div class="carousel-indicators">
+            {% for m in slider_movies %}
+            <button type="button" data-bs-target="#heroSlider" data-bs-slide-to="{{loop.index0}}" class="{% if loop.first %}active{% endif %}"></button>
+            {% endfor %}
+        </div>
         <div class="carousel-inner">
             {% for m in slider_movies %}
             <div class="carousel-item {% if loop.first %}active{% endif %}">
-                <a href="/movie/{{m.tmdb_id}}">
-                    <img src="{{m.poster}}" class="d-block w-100" alt="{{m.title}}">
-                    <div class="carousel-caption d-none d-md-block">
-                        <h3>{{m.title}} ({{m.year}})</h3>
-                        <p>⭐ Rating: {{m.rating}} | 📂 Category: {{m.category}}</p>
-                    </div>
-                </a>
+                <img src="{{m.poster}}" class="d-block w-100" alt="{{m.title}}">
+                <div class="carousel-caption">
+                    <div class="meta">⭐ {{m.rating}} | {{m.year}} | {{m.category}}</div>
+                    <h3>{{m.title}}</h3>
+                    <p>{{m.story}}</p>
+                    <a href="/movie/{{m.tmdb_id}}" class="btn-watch">WATCH NOW</a>
+                </div>
             </div>
             {% endfor %}
         </div>
-        <button class="carousel-control-prev" type="button" data-bs-target="#heroSlider" data-bs-slide="prev">
-            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
-        </button>
-        <button class="carousel-control-next" type="button" data-bs-target="#heroSlider" data-bs-slide="next">
-            <span class="carousel-control-next-icon" aria-hidden="true"></span>
-        </button>
     </div>
     {% endif %}
+</div>
 
+<div class="container">
     <div class="container mb-4 text-center">
         <a href="/" class="cat-pill {% if not cat %}active{% endif %}">All</a>
         {% for c in categories %}
