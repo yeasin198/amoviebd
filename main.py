@@ -5,6 +5,7 @@ import time
 import threading
 import urllib.parse
 import re
+import math
 from telebot import types
 from pymongo import MongoClient
 from bson import ObjectId
@@ -18,7 +19,8 @@ try:
     db = client['movie_portal_db']
     config_col = db['bot_config']      
     movies_col = db['movies_data']      
-    episodes_col = db['episodes_data']  
+    episodes_col = db['episodes_data']
+    users_col = db['bot_users'] # নতুন: ইউজার ট্র্যাক করার জন্য
     print("✅ MongoDB Connected Successfully!")
 except Exception as e:
     print(f"❌ MongoDB Connection Error: {e}")
@@ -82,6 +84,10 @@ def register_handlers(bot):
 
     @bot.message_handler(commands=['start'])
     def start(message):
+        # নতুন: ইউজার সেভ করা
+        if not users_col.find_one({'user_id': message.from_user.id}):
+            users_col.insert_one({'user_id': message.from_user.id, 'name': message.from_user.first_name})
+            
         config = get_config()
         if len(message.text.split()) > 1:
             cmd_data = message.text.split()[1]
@@ -101,6 +107,32 @@ def register_handlers(bot):
                     bot.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি।")
                 return
         bot.reply_to(message, "🎬 মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।")
+
+    @bot.message_handler(commands=['stats'])
+    def stats(message):
+        config = get_config()
+        if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
+        u_count = users_col.count_documents({})
+        m_count = movies_col.count_documents({})
+        bot.reply_to(message, f"📊 বটের অবস্থা:\n\n👤 মোট ইউজার: {u_count}\n🎬 মোট মুভি/শো: {m_count}")
+
+    @bot.message_handler(commands=['broadcast'])
+    def broadcast(message):
+        config = get_config()
+        if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
+        if not message.reply_to_message:
+            bot.reply_to(message, "⚠️ যে মেসেজটি পাঠাতে চান সেটি রিপ্লাই করে /broadcast লিখুন।")
+            return
+        
+        users = users_col.find({})
+        count = 0
+        for u in users:
+            try:
+                bot.copy_message(u['user_id'], message.chat.id, message.reply_to_message.message_id)
+                count += 1
+                time.sleep(0.1) # ফ্লাড কন্ট্রোল
+            except: pass
+        bot.send_message(message.chat.id, f"✅ {count} জন ইউজারের কাছে পাঠানো হয়েছে।")
 
     @bot.message_handler(commands=['post'])
     def post_search(message):
@@ -234,11 +266,19 @@ def register_handlers(bot):
 @app.route('/')
 def home():
     q = request.args.get('search')
+    page = int(request.args.get('page', 1))
+    limit = 24 # প্রতি পেজে ২৪টি মুভি
+    skip = (page - 1) * limit
+    
     if q:
-        movies = list(movies_col.find({"title": {"$regex": q, "$options": "i"}}).sort('_id', -1))
+        total = movies_col.count_documents({"title": {"$regex": q, "$options": "i"}})
+        movies = list(movies_col.find({"title": {"$regex": q, "$options": "i"}}).sort('_id', -1).skip(skip).limit(limit))
     else:
-        movies = list(movies_col.find().sort('_id', -1))
-    return render_template_string(HOME_HTML, movies=movies, query=q)
+        total = movies_col.count_documents({})
+        movies = list(movies_col.find().sort('_id', -1).skip(skip).limit(limit))
+    
+    pages = math.ceil(total / limit)
+    return render_template_string(HOME_HTML, movies=movies, query=q, page=page, pages=pages)
 
 @app.route('/movie/<tmdb_id>')
 def movie_details(tmdb_id):
@@ -266,7 +306,7 @@ def movie_details(tmdb_id):
             if s_num not in seasons_data: seasons_data[s_num] = []
             seasons_data[s_num].append(e)
 
-    return render_template_string(DETAILS_HTML, m=movie, seasons=seasons_data, bot_user=bot_user)
+    return render_template_string(DETAILS_HTML, m=movie, seasons=seasons_data, bot_user=bot_user, site_url=config.get('SITE_URL'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -408,13 +448,15 @@ COMMON_STYLE = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
     body { background: #0b0c10; color: #c5c6c7; font-family: 'Poppins', sans-serif; }
-    .neon-card { background: #1f2833; border: 1px solid #45a29e; border-radius: 12px; transition: 0.3s; }
+    .neon-card { background: #1f2833; border: 1px solid #45a29e; border-radius: 12px; transition: 0.3s; overflow: hidden; }
     .neon-card:hover { transform: translateY(-5px); box-shadow: 0 0 15px #66fcf1; border-color: #66fcf1; }
-    .btn-neon { background: #66fcf1; color: #0b0c10; font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; }
+    .btn-neon { background: #66fcf1; color: #0b0c10; font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.2s; }
     .btn-neon:hover { background: #45a29e; color: #fff; }
     .navbar { background: #1f2833; border-bottom: 2px solid #66fcf1; }
-    .poster-img { height: 260px; width: 100%; object-fit: cover; border-radius: 12px 12px 0 0; }
+    .poster-img { height: 260px; width: 100%; object-fit: cover; }
     .admin-box { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 20px; }
+    .pagination .page-link { background: #1f2833; border-color: #45a29e; color: #66fcf1; }
+    .pagination .page-item.active .page-link { background: #66fcf1; border-color: #66fcf1; color: #0b0c10; }
 </style>
 """
 
@@ -430,7 +472,7 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
 {% for m in movies %}
 <div class="col"><a href="/movie/{{m.tmdb_id}}" style="text-decoration:none; color:inherit;">
     <div class="neon-card h-100">
-        <img src="{{m.poster}}" class="poster-img">
+        <img src="{{m.poster}}" class="poster-img" loading="lazy">
         <div class="p-2 text-center">
             <div class="small fw-bold text-truncate">{{m.title}}</div>
             <div class="text-info small">⭐ {{m.rating}} | {{m.year}}</div>
@@ -438,10 +480,29 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
     </div>
 </a></div>
 {% endfor %}
-</div></div></body></html>"""
+</div>
 
-DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Details</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + """
+{% if pages > 1 %}
+<nav class="mt-5"><ul class="pagination justify-content-center">
+    {% for p in range(1, pages + 1) %}
+    <li class="page-item {% if p == page %}active{% endif %}">
+        <a class="page-link" href="/?page={{p}}{% if query %}&search={{query}}{% endif %}">{{p}}</a>
+    </li>
+    {% endfor %}
+</ul></nav>
+{% endif %}
+</div><br><br></body></html>"""
+
+DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>" + """
+<title>{{m.title}} ({{m.year}}) - Movie Portal</title>
+<meta property="og:title" content="{{m.title}} ({{m.year}})">
+<meta property="og:description" content="{{m.story[:150]}}...">
+<meta property="og:image" content="{{m.poster}}">
+<meta property="og:type" content="video.movie">
+<link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>
+""" + f"{COMMON_STYLE}</head><body>" + """
 <div class="container py-5">
+    <div class="mb-3"><a href="/" class="text-info" style="text-decoration:none;">⬅️ Back to Home</a></div>
     <div class="row">
         <div class="col-md-4 mb-4"><img src="{{m.poster}}" class="w-100 rounded border border-info shadow-lg"></div>
         <div class="col-md-8">
@@ -457,7 +518,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
                     <a href="{{f.short_url}}" target="_blank" class="btn-neon d-inline-block mb-2 me-2">🚀 Download {{f.quality}}</a>
                     {% endfor %}
                 {% else %}
-                    <p class="text-warning">Direct links not added yet.</p>
+                    <p class="text-warning">Links not added yet.</p>
                 {% endif %}
             {% else %}
                 {% for s, eps in seasons.items() %}
@@ -504,6 +565,8 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
         <div class="admin-box">
             <h5>🔧 Global Configuration</h5>
             <form action="/save_config" method="POST">
+                <label class="small fw-bold">Site URL (https://yourdomain.com)</label>
+                <input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}">
                 <label class="small fw-bold">Bot Token</label>
                 <input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}">
                 <label class="small fw-bold">Admin Telegram ID</label>
@@ -577,7 +640,7 @@ EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Movie</title><link rel="st
     </div>
     <div class="col-md-6">
         <div class="card p-4 shadow">
-            <h5>➕ Add Quality Button (Unlimited)</h5>
+            <h5>➕ Add Quality Button</h5>
             <form action="/admin/add_file" method="POST" class="mb-4">
                 <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
                 <input name="quality" class="form-control mb-2" placeholder="Quality (e.g. 720p Bangla)" required>
