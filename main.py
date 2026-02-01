@@ -40,23 +40,25 @@ def get_config():
         'SITE_URL': '', 'BOT_TOKEN': '', 'TMDB_API_KEY': '', 
         'ADMIN_ID': '', 'STORAGE_CHANNEL_ID': '',
         'AUTO_DELETE_TIME': 0, 'PROTECT_CONTENT': 'off',
-        'SHORTENER_URL': '', 'SHORTENER_API': '' # শর্টনার ফিল্ড যুক্ত
+        'SHORTENER_URL': '', 'SHORTENER_API': '' # শর্টনার ফিল্ড
     }
     for key, val in defaults.items():
         if key not in conf: conf[key] = val
     return conf
 
 def get_short_link(long_url):
-    """লিঙ্ক শর্টনার ফাংশন"""
+    """লিঙ্ক শর্টনার লজিক"""
     config = get_config()
     s_url = config.get('SHORTENER_URL')
     s_api = config.get('SHORTENER_API')
     if not s_url or not s_api: return long_url
     try:
+        # API Format: https://gplinks.in/api?api=YOUR_API_KEY&url=YOUR_URL
         api_endpoint = f"https://{s_url}?api={s_api}&url={urllib.parse.quote(long_url)}"
         res = requests.get(api_endpoint).json()
         return res.get('shortenedUrl') or res.get('shortlink') or long_url
-    except: return long_url
+    except:
+        return long_url
 
 def create_bot():
     config = get_config()
@@ -86,11 +88,11 @@ def register_handlers(bot):
             cmd_data = message.text.split()[1]
             file_to_send = None
             
-            # ডিপ লিঙ্কিং হ্যান্ডলার (সরাসরি ফাইল আইডি পাঠাবে)
+            # নিউ ডিপ লিঙ্কিং ফরম্যাট (dl_file_id)
             if cmd_data.startswith('dl_'):
                 file_to_send = cmd_data.replace('dl_', '')
             
-            # আপনার অরিজিনাল মডিউল (পুরাতন ডাটার জন্য)
+            # পুরাতন ফরম্যাট সাপোর্ট (m_ এবং e_)
             elif cmd_data.startswith('m_'):
                 m_id = cmd_data.replace('m_', '')
                 item = movies_col.find_one({'tmdb_id': m_id})
@@ -122,7 +124,7 @@ def register_handlers(bot):
         if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
         query = message.text.replace('/post', '').strip()
         if not query:
-            bot.reply_to(message, "⚠️ মুভি বা টিভি শো-র নাম লিখুন। যেমন: `/post Avatar`")
+            bot.reply_to(message, "⚠️ মুভির নাম লিখুন। যেমন: `/post Avatar`")
             return
         
         tmdb_api = config.get('TMDB_API_KEY')
@@ -166,14 +168,14 @@ def register_handlers(bot):
         uid = message.from_user.id
         if uid in admin_states:
             admin_states[uid]['episode'] = message.text
-            bot.send_message(message.chat.id, f"📥 সিজন {admin_states[uid]['season']} এপিসোড {message.text} এর কোয়ালিটি লিখুন (যেমন: 720p):")
+            bot.send_message(message.chat.id, f"📥 এপিসোড {message.text} এর কোয়ালিটি লিখুন (যেমন: 720p বা 1080p):")
             bot.register_next_step_handler(message, get_tv_quality)
 
     def get_tv_quality(message):
         uid = message.from_user.id
         if uid in admin_states:
             admin_states[uid]['qual'] = message.text
-            bot.send_message(message.chat.id, "📥 এবার ভিডিও ফাইলটি পাঠান:")
+            bot.send_message(message.chat.id, f"📥 এবার {message.text} এর ভিডিও ফাইলটি পাঠান:")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_m_'))
     def movie_qual(call):
@@ -192,13 +194,13 @@ def register_handlers(bot):
             bot.register_next_step_handler(msg, get_custom_qual)
         else:
             admin_states[call.from_user.id] = {'type': 'movie', 'tmdb_id': mid, 'lang': lang, 'qual': qual}
-            bot.send_message(call.message.chat.id, "📥 এবার মুভি ফাইলটি এখানে পাঠান:")
+            bot.send_message(call.message.chat.id, f"📥 এবার {lang} {qual} মুভি ফাইলটি এখানে পাঠান:")
 
     def get_custom_qual(message):
         uid = message.from_user.id
         if uid in admin_states:
             admin_states[uid]['qual'] = message.text
-            bot.send_message(message.chat.id, f"📥 এবার {message.text} এর মুভি ফাইলটি এখানে পাঠান:")
+            bot.send_message(message.chat.id, f"📥 এবার {message.text} মুভি ফাইলটি এখানে পাঠান:")
 
     @bot.message_handler(content_types=['video', 'document'])
     def save_media(message):
@@ -218,18 +220,19 @@ def register_handlers(bot):
             director = next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A')
             trailer_key = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
 
+            # মেইন ডাটা আপডেট
             movie_info = {
                 'tmdb_id': str(state['tmdb_id']), 'type': state['type'], 'title': title, 'year': year,
                 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
                 'rating': str(round(m.get('vote_average', 0), 1)), 'story': m.get('overview', 'N/A'),
-                'cast': cast, 'director': director,
-                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else "",
-                'lang': state.get('lang', 'N/A'), 'quality': state.get('qual', 'HD') # পুরাতন ফিল্ড ঠিক রাখা হলো
+                'cast': cast, 'director': director, 'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else "",
+                'lang': state.get('lang', 'N/A'), 'quality': state.get('qual', 'HD')
             }
             movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
 
-            # --- আনলিমিটেড কোয়ালিটি লজিক (Push to Array) ---
-            file_data = {'quality': f"{state.get('lang', '')} {state['qual']}".strip(), 'file_id': sent_msg.message_id}
+            # আনলিমিটেড কোয়ালিটি ফাইল পুশ (files array তে জমা হবে)
+            file_label = f"{state.get('lang', '')} {state['qual']}".strip()
+            file_data = {'quality': file_label, 'file_id': sent_msg.message_id}
 
             if state['type'] == 'movie':
                 movies_col.update_one({'tmdb_id': state['tmdb_id']}, {'$push': {'files': file_data}})
@@ -240,7 +243,7 @@ def register_handlers(bot):
                      '$push': {'files': file_data}}, upsert=True
                 )
             
-            bot.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}")
+            bot.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title} ({file_label})")
             del admin_states[uid]
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ এরর: {e}")
@@ -262,13 +265,15 @@ def movie_details(tmdb_id):
         if not movie: return "Not Found", 404
         config = get_config()
         bot_user = ""
-        try: bot_user = telebot.TeleBot(config['BOT_TOKEN']).get_me().username
+        try:
+            bot_user = telebot.TeleBot(config['BOT_TOKEN']).get_me().username
         except: pass
 
-        # মুভি লিঙ্ক শর্টনার
+        # মুভি লিঙ্ক শর্টনার প্রসেস
         if 'files' in movie:
             for f in movie['files']:
-                f['short_url'] = get_short_link(f"https://t.me/{bot_user}?start=dl_{f['file_id']}")
+                raw_url = f"https://t.me/{bot_user}?start=dl_{f['file_id']}"
+                f['short_url'] = get_short_link(raw_url)
 
         seasons_data = {}
         if movie.get('type') == 'tv':
@@ -276,7 +281,8 @@ def movie_details(tmdb_id):
             for e in eps:
                 if 'files' in e:
                     for f in e['files']:
-                        f['short_url'] = get_short_link(f"https://t.me/{bot_user}?start=dl_{f['file_id']}")
+                        raw_url = f"https://t.me/{bot_user}?start=dl_{f['file_id']}"
+                        f['short_url'] = get_short_link(raw_url)
                 s_num = e['season']
                 if s_num not in seasons_data: seasons_data[s_num] = []
                 seasons_data[s_num].append(e)
@@ -327,8 +333,8 @@ def save_config():
         'TMDB_API_KEY': request.form.get('tmdb'),
         'ADMIN_ID': request.form.get('admin_id'),
         'STORAGE_CHANNEL_ID': request.form.get('channel_id'),
-        'SHORTENER_URL': request.form.get('s_url'), # শর্টনার URL সেভ
-        'SHORTENER_API': request.form.get('s_api'), # শর্টনার API সেভ
+        'SHORTENER_URL': request.form.get('s_url'),
+        'SHORTENER_API': request.form.get('s_api'),
         'AUTO_DELETE_TIME': int(request.form.get('delete_time', 0)),
         'PROTECT_CONTENT': request.form.get('protect')
     }
@@ -358,7 +364,7 @@ def webhook():
         return '', 200
     return 'Forbidden', 403
 
-# ================== HTML ডিজাইন ও সিএসএস (আপনার মেইন কোড) ==================
+# ================== HTML ডিজাইন ও সিএসএস (Neon UI) ==================
 
 COMMON_STYLE = """
 <style>
@@ -382,9 +388,9 @@ COMMON_STYLE = """
     .badge-type { position: absolute; top: 10px; left: 10px; background: #66fcf1; color: #0b0c10; font-weight: bold; padding: 2px 8px; border-radius: 5px; z-index: 10; font-size: 0.7rem; text-transform: uppercase;}
     .badge-year { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: #fff; padding: 2px 8px; border-radius: 5px; z-index: 10; font-size: 0.7rem; }
     .season-box { background: #1f2833; border-radius: 10px; padding: 15px; margin-bottom: 15px; border-left: 5px solid #66fcf1; }
-    .ep-link { background: #45a29e; color: white; padding: 5px 12px; margin: 3px; border-radius: 5px; text-decoration: none; display: inline-block; font-size: 0.8rem; }
-    .ep-link:hover { background: #66fcf1; color: #0b0c10; }
     .btn-main { background: #66fcf1; color: #0b0c10; font-weight: bold; border-radius: 30px; padding: 12px; text-decoration: none; display: inline-block; text-align: center; margin: 5px; }
+    .ep-link { background: #45a29e; color: white; padding: 4px 10px; margin: 2px; border-radius: 5px; text-decoration: none; display: inline-block; font-size: 0.8rem; }
+    .ep-link:hover { background: #66fcf1; color: #000; }
 </style>
 """
 
@@ -430,7 +436,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
                     <a href="{{f.short_url}}" target="_blank" class="btn-main">🚀 Download {{f.quality}}</a>
                     {% endfor %}
                 {% else %}
-                    <a href="https://t.me/{{bot_user}}?start=m_{{m.tmdb_id}}" class="btn btn-main shadow">🚀 GET FILE IN BOT</a>
+                    <a href="https://t.me/{{bot_user}}?start=m_{{m.tmdb_id}}" class="btn btn-main shadow">🚀 GET IN BOT</a>
                 {% endif %}
             {% else %}
                 <h5 class="text-info">Seasons & Episodes:</h5>
@@ -445,7 +451,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
                             <a href="{{f.short_url}}" target="_blank" class="ep-link">{{f.quality}}</a>
                             {% endfor %}
                         {% else %}
-                            <a href="https://t.me/{{bot_user}}?start=e_{{ep._id}}" class="ep-link">Get Bot Link</a>
+                            <a href="https://t.me/{{bot_user}}?start=e_{{ep._id}}" class="ep-link">Get in Bot</a>
                         {% endif %}
                         </div>
                     {% endfor %}
@@ -454,16 +460,17 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
             {% endif %}
         </div>
     </div>
-    {% if m.trailer %}<div class="mt-5"><h4>Trailer</h4><div class="ratio ratio-16x9 border border-info rounded shadow-lg"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
+    {% if m.trailer %}<div class="mt-5"><h4>Official Trailer</h4><div class="ratio ratio-16x9 border border-info rounded shadow-lg"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
 </div></body></html>"""
 
 ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-light container py-4">
 <div class="d-flex justify-content-between mb-4"><h3>⚙️ Admin Dashboard</h3><a href="/" class="btn btn-sm btn-dark">View Site</a></div>
 <form action="/save_config" method="POST" class="card p-3 mb-4 shadow-sm border-primary">
+    <h5>Configuration</h5>
     <div class="row">
         <div class="col-md-6">
             <label>Bot Token</label><input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}">
-            <label>TMDB API Key</label><input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}">
+            <label>TMDB Key</label><input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}">
             <label>Site URL</label><input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}">
             <label>Shortener URL (e.g. gplinks.in/api)</label><input name="s_url" class="form-control mb-2" value="{{config.SHORTENER_URL}}">
         </div>
@@ -474,7 +481,7 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
             <label>Auto Delete (Sec)</label><input name="delete_time" class="form-control mb-2" value="{{config.AUTO_DELETE_TIME}}">
         </div>
     </div>
-    <button class="btn btn-primary mt-3">Save All Settings</button>
+    <button class="btn btn-primary mt-3">Save All Config</button>
 </form>
 <table class="table table-sm table-striped border">
 {% for m in movies %}<tr><td>{{m.title}} ({{m.year}})</td><td class="text-end"><a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-xs btn-warning">Edit</a> <a href="/delete/{{m.tmdb_id}}" class="btn btn-xs btn-danger">Del</a></td></tr>{% endfor %}
@@ -491,7 +498,7 @@ EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Content</title><link rel="
 <label>Quality</label><input name="quality" class="form-control mb-2" value="{{m.quality}}">
 </div><div class="col-md-6">
 <label>Poster URL</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
-<label>Trailer (Embed Link)</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
+<label>Trailer Link</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
 <label>Director</label><input name="director" class="form-control mb-2" value="{{m.director}}">
 <label>Cast</label><input name="cast" class="form-control mb-2" value="{{m.cast}}">
 </div></div><label>Storyline</label><textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea>
