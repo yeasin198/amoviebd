@@ -5,32 +5,32 @@ import time
 import threading
 from telebot import types
 from pymongo import MongoClient
+from bson import ObjectId
 from flask import Flask, render_template_string, redirect, url_for, request, session
 
 # ================== ডাটাবেস সেটআপ ==================
-# আপনার MongoDB URI এখানে দিন অথবা Environment Variable হিসেবে সেট করুন।
 MONGO_URI = os.environ.get('MONGO_URI', "your_mongodb_uri_here") 
 
 try:
     client = MongoClient(MONGO_URI)
     db = client['movie_portal_db']
     config_col = db['bot_config']
-    movies_col = db['movies_data']
+    movies_col = db['movies_data'] 
+    episodes_col = db['episodes_data'] 
     settings_col = db['settings']
     print("✅ MongoDB Connected Successfully!")
 except Exception as e:
     print(f"❌ MongoDB Connection Error: {e}")
 
 app = Flask(__name__)
-app.secret_key = "secret_movie_key_123"
+app.secret_key = "portal_edit_system_ultra_secret"
 
-# অ্যাডমিন প্যানেল ডিফল্ট লগইন
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "password123"
 
 admin_states = {}
 
-# --- [সহায়ক ফাংশনসমূহ] ---
+# --- [सहায়ক ফাংশনসমূহ] ---
 def get_config():
     conf = config_col.find_one({'type': 'core_settings'}) or {}
     defaults = {
@@ -42,9 +42,6 @@ def get_config():
         if key not in conf: conf[key] = val
     return conf
 
-def get_shortener():
-    return settings_col.find_one({'type': 'shortener'}) or {'status': 'off', 'api_url': '', 'api_key': ''}
-
 def create_bot():
     config = get_config()
     token = config.get('BOT_TOKEN')
@@ -53,7 +50,6 @@ def create_bot():
     return None
 
 def auto_delete_task(bot, chat_id, msg_id, delay):
-    """নির্দিষ্ট সময় পর মেসেজ ডিলিট করার থ্রেড ফাংশন"""
     if delay > 0:
         time.sleep(delay)
         try:
@@ -67,146 +63,147 @@ def register_handlers(bot):
     @bot.message_handler(commands=['start'])
     def start(message):
         config = get_config()
-        # Deep Linking চেক (যখন ওয়েবসাইট থেকে 'Download' এ ক্লিক করবে)
         if len(message.text.split()) > 1:
-            movie_id = message.text.split()[1]
-            movie = movies_col.find_one({'tmdb_id': str(movie_id)})
-            if movie:
+            cmd_data = message.text.split()[1]
+            file_to_send = None
+            if cmd_data.startswith('m_'):
+                m_id = cmd_data.replace('m_', '')
+                item = movies_col.find_one({'tmdb_id': m_id})
+                if item: file_to_send = item.get('file_id')
+            elif cmd_data.startswith('e_'):
+                e_id = cmd_data.replace('e_', '')
+                item = episodes_col.find_one({'_id': ObjectId(e_id)})
+                if item: file_to_send = item.get('file_id')
+
+            if file_to_send:
                 is_protect = True if config.get('PROTECT_CONTENT') == 'on' else False
-                
-                # মুভি ফাইল পাঠানো
-                sent_msg = bot.copy_message(
-                    chat_id=message.chat.id,
-                    from_chat_id=int(config['STORAGE_CHANNEL_ID']),
-                    message_id=int(movie['file_id']),
-                    protect_content=is_protect
-                )
-                
-                # অটো ডিলিট অপশন
+                sent_msg = bot.copy_message(message.chat.id, int(config['STORAGE_CHANNEL_ID']), int(file_to_send), protect_content=is_protect)
                 delay = int(config.get('AUTO_DELETE_TIME', 0))
                 if delay > 0:
                     bot.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
                     threading.Thread(target=auto_delete_task, args=(bot, message.chat.id, sent_msg.message_id, delay)).start()
                 return
-            else:
-                bot.send_message(message.chat.id, "❌ ফাইলটি ডাটাবেসে পাওয়া যায়নি।")
-                return
-        bot.reply_to(message, "🎬 স্বাগতম! মুভি পোস্ট করতে অ্যাডমিন `/post মুভির নাম` লিখুন।", parse_mode="Markdown")
+        bot.reply_to(message, "🎬 মুভি বা টিভি শো খুঁজতে ওয়েবসাইট ভিজিট করুন। অ্যাডমিন মুভি পোস্ট করতে `/post` লিখুন।")
 
     @bot.message_handler(commands=['post'])
     def post_search(message):
         config = get_config()
         if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
         query = message.text.replace('/post', '').strip()
-        if not query:
-            bot.reply_to(message, "⚠️ মুভির নাম লিখুন। যেমন: `/post Avatar`")
-            return
+        if not query: return bot.reply_to(message, "⚠️ নাম লিখুন।")
         
         tmdb_api = config.get('TMDB_API_KEY')
-        url = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_api}&query={query}"
-        try:
-            res = requests.get(url).json().get('results', [])
-        except: res = []
-
-        if not res:
-            bot.reply_to(message, "❌ মুভিটি খুঁজে পাওয়া যায়নি।")
-            return
+        url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_api}&query={query}"
+        res = requests.get(url).json().get('results', [])
 
         markup = types.InlineKeyboardMarkup()
-        for m in res[:5]:
-            markup.add(types.InlineKeyboardButton(text=f"{m['title']} ({m.get('release_date', '')[:4]})", callback_data=f"sel_{m['id']}"))
-        bot.send_message(message.chat.id, "🔍 মুভিটি সিলেক্ট করুন:", reply_markup=markup)
+        for m in res[:8]:
+            if m['media_type'] not in ['movie', 'tv']: continue
+            name = m.get('title') or m.get('name')
+            year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
+            markup.add(types.InlineKeyboardButton(text=f"[{m['media_type'].upper()}] {name} ({year})", callback_data=f"sel_{m['media_type']}_{m['id']}"))
+        bot.send_message(message.chat.id, "🔍 সিলেক্ট করুন:", reply_markup=markup)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
-    def lang_sel(call):
-        movie_id = call.data.split('_')[1]
-        markup = types.InlineKeyboardMarkup()
-        for l in ["Bangla", "Hindi", "English", "Multi"]:
-            markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_{movie_id}_{l}"))
-        bot.edit_message_text("🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+    def handle_selection(call):
+        _, m_type, m_id = call.data.split('_')
+        if m_type == 'movie':
+            markup = types.InlineKeyboardMarkup()
+            for l in ["Bangla", "Hindi", "English", "Multi"]:
+                markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_movie_{m_id}_{l}"))
+            bot.edit_message_text("🌐 মুভির ভাষা সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        else:
+            admin_states[call.from_user.id] = {'type': 'tv', 'tmdb_id': m_id}
+            bot.edit_message_text("📺 সিজন নম্বর লিখুন (যেমন: 1):", call.message.chat.id, call.message.message_id)
+            bot.register_next_step_handler(call.message, get_season)
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
-    def qual_sel(call):
-        _, mid, lang = call.data.split('_')
-        markup = types.InlineKeyboardMarkup()
-        for q in ["480p", "720p", "1080p", "4K", "Bluray"]:
-            markup.add(types.InlineKeyboardButton(text=q, callback_data=f"save_{mid}_{lang}_{q}"))
-        bot.edit_message_text("💎 কোয়ালিটি সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+    def get_season(message):
+        uid = message.from_user.id
+        if uid in admin_states:
+            admin_states[uid]['season'] = message.text
+            bot.send_message(message.chat.id, f"🔢 এপিসোড নম্বর লিখুন (যেমন: 1):")
+            bot.register_next_step_handler(message, get_episode)
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('save_'))
-    def ask_file(call):
+    def get_episode(message):
+        uid = message.from_user.id
+        if uid in admin_states:
+            admin_states[uid]['episode'] = message.text
+            bot.send_message(message.chat.id, f"📥 সিজন {admin_states[uid]['season']} এপিসোড {message.text} এর ফাইল পাঠান:")
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_movie_'))
+    def movie_qual(call):
+        _, _, mid, lang = call.data.split('_')
+        markup = types.InlineKeyboardMarkup()
+        for q in ["720p", "1080p", "4K"]:
+            markup.add(types.InlineKeyboardButton(text=q, callback_data=f"mqual_{mid}_{lang}_{q}"))
+        bot.edit_message_text("💎 মুভির কোয়ালিটি সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('mqual_'))
+    def movie_file_step(call):
         _, mid, lang, qual = call.data.split('_')
-        admin_states[call.from_user.id] = {'tmdb_id': mid, 'lang': lang, 'qual': qual}
-        bot.edit_message_text(f"📥 মুভি: {mid}\nভাষা: {lang}\nকোয়ালিটি: {qual}\n\nএখন মুভি ফাইলটি (ভিডিও/ডকুমেন্ট) এখানে পাঠান।", call.message.chat.id, call.message.message_id)
+        admin_states[call.from_user.id] = {'type': 'movie', 'tmdb_id': mid, 'lang': lang, 'qual': qual}
+        bot.edit_message_text("📥 মুভি ফাইলটি পাঠান:", call.message.chat.id, call.message.message_id)
 
     @bot.message_handler(content_types=['video', 'document'])
-    def handle_incoming_file(message):
+    def save_media(message):
         uid = message.from_user.id
         config = get_config()
-        if uid in admin_states:
-            state = admin_states[uid]
-            # স্টোরেজ চ্যানেলে মুভিটি রাখা
-            sent_msg = bot.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
-            
-            # TMDB থেকে ডিটেইলস সংগ্রহ (Cast, Crew, Trailer সহ)
-            tmdb_api = config['TMDB_API_KEY']
-            m_url = f"https://api.themoviedb.org/3/movie/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
-            m = requests.get(m_url).json()
-            
-            cast = ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:10]])
-            director = next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] == 'Director'), 'N/A')
-            trailer_key = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
+        if uid not in admin_states: return
 
-            movie_data = {
-                'tmdb_id': str(state['tmdb_id']), 
-                'title': m['title'],
-                'lang': state['lang'], 
-                'quality': state['qual'],
-                'file_id': sent_msg.message_id,
-                'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
-                'rating': m.get('vote_average', 'N/A'),
-                'story': m.get('overview', 'N/A'),
-                'cast': cast,
-                'director': director,
-                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else ""
-            }
-            movies_col.update_one({'tmdb_id': movie_data['tmdb_id']}, {'$set': movie_data}, upsert=True)
-            bot.send_message(message.chat.id, f"✅ মুভি সফলভাবে সেভ হয়েছে!\nটাইটেল: {m['title']}")
-            del admin_states[uid]
+        state = admin_states[uid]
+        sent_msg = bot.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
+        tmdb_api = config['TMDB_API_KEY']
+        
+        m = requests.get(f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos").json()
+        title = m.get('title') or m.get('name')
+        year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
+        
+        movie_info = {
+            'tmdb_id': str(state['tmdb_id']), 'type': state['type'], 'title': title, 'year': year,
+            'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
+            'rating': str(m.get('vote_average', 'N/A')), 'story': m.get('overview', 'N/A'),
+            'cast': ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]]),
+            'director': next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A'),
+            'trailer': f"https://www.youtube.com/embed/{next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), '')}"
+        }
 
-# --- [FLASK WEB ROUTES] ---
+        if state['type'] == 'movie':
+            movie_info.update({'file_id': sent_msg.message_id, 'lang': state['lang'], 'quality': state['qual']})
+            movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
+        else:
+            movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
+            episodes_col.update_one(
+                {'tmdb_id': str(state['tmdb_id']), 'season': int(state['season']), 'episode': int(state['episode'])},
+                {'$set': {'file_id': sent_msg.message_id}}, upsert=True
+            )
+        bot.send_message(message.chat.id, "✅ মুভি/এপিসোড সফলভাবে অ্যাড হয়েছে!")
+        del admin_states[uid]
+
+# --- [WEB ROUTES] ---
 
 @app.route('/')
 def home():
-    movies = list(movies_col.find().sort('_id', -1))
-    return render_template_string(HOME_HTML, movies=movies)
+    q = request.args.get('search')
+    if q: movies = list(movies_col.find({"$or": [{"title": {"$regex": q, "$options": "i"}}, {"year": q}]}).sort('_id', -1))
+    else: movies = list(movies_col.find().sort('_id', -1))
+    return render_template_string(HOME_HTML, movies=movies, query=q)
 
 @app.route('/movie/<tmdb_id>')
 def movie_details(tmdb_id):
     movie = movies_col.find_one({'tmdb_id': tmdb_id})
-    if not movie: return "Movie Not Found", 404
-    
-    config = get_config()
-    sh_set = get_shortener()
-    
-    # বটের ইউজারনেম পাওয়া
-    bot_username = ""
-    if config.get('BOT_TOKEN'):
-        try:
-            bot_username = telebot.TeleBot(config['BOT_TOKEN']).get_me().username
-        except: pass
+    if not movie: return "Not Found", 404
+    bot_user = ""
+    try: bot_user = telebot.TeleBot(get_config()['BOT_TOKEN']).get_me().username
+    except: pass
 
-    long_url = f"https://t.me/{bot_username}?start={tmdb_id}"
-    final_url = long_url
-    
-    # লিঙ্ক শর্টনার লজিক
-    if sh_set.get('status') == 'on' and sh_set.get('api_url'):
-        try:
-            res = requests.get(sh_set['api_url'], params={'api': sh_set['api_key'], 'url': long_url}).json()
-            final_url = res.get('shortenedUrl') or res.get('short_url') or long_url
-        except: pass
-
-    return render_template_string(DETAILS_HTML, m=movie, download_url=final_url)
+    seasons_data = {}
+    if movie['type'] == 'tv':
+        all_eps = list(episodes_col.find({'tmdb_id': tmdb_id}).sort([('season', 1), ('episode', 1)]))
+        for ep in all_eps:
+            s_num = ep['season']
+            if s_num not in seasons_data: seasons_data[s_num] = []
+            seasons_data[s_num].append(ep)
+    return render_template_string(DETAILS_HTML, m=movie, seasons=seasons_data, bot_user=bot_user)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -216,10 +213,37 @@ def login():
             return redirect(url_for('admin'))
     return render_template_string(LOGIN_HTML)
 
+# --- [ADMIN PANEL & EDIT SYSTEM] ---
+
 @app.route('/admin')
 def admin():
     if not session.get('logged_in'): return redirect(url_for('login'))
-    return render_template_string(ADMIN_HTML, config=get_config(), shortener=get_shortener(), movies=list(movies_col.find()))
+    return render_template_string(ADMIN_HTML, config=get_config(), movies=list(movies_col.find()))
+
+@app.route('/admin/edit/<tmdb_id>')
+def edit_movie(tmdb_id):
+    if not session.get('logged_in'): return redirect(url_for('login'))
+    movie = movies_col.find_one({'tmdb_id': tmdb_id})
+    return render_template_string(EDIT_HTML, m=movie)
+
+@app.route('/admin/update', methods=['POST'])
+def update_movie():
+    if not session.get('logged_in'): return redirect(url_for('login'))
+    tmdb_id = request.form.get('tmdb_id')
+    update_data = {
+        'title': request.form.get('title'),
+        'year': request.form.get('year'),
+        'rating': request.form.get('rating'),
+        'lang': request.form.get('lang'),
+        'quality': request.form.get('quality'),
+        'poster': request.form.get('poster'),
+        'story': request.form.get('story'),
+        'trailer': request.form.get('trailer'),
+        'cast': request.form.get('cast'),
+        'director': request.form.get('director')
+    }
+    movies_col.update_one({'tmdb_id': tmdb_id}, {'$set': update_data})
+    return redirect(url_for('admin'))
 
 @app.route('/save_config', methods=['POST'])
 def save_config():
@@ -236,145 +260,95 @@ def save_config():
     config_col.update_one({'type': 'core_settings'}, {'$set': data}, upsert=True)
     try:
         bot = telebot.TeleBot(data['BOT_TOKEN'])
-        bot.remove_webhook()
-        time.sleep(1)
         bot.set_webhook(url=f"{data['SITE_URL']}/webhook")
     except: pass
-    return redirect(url_for('admin'))
-
-@app.route('/save_shortener', methods=['POST'])
-def save_shortener():
-    if not session.get('logged_in'): return redirect(url_for('login'))
-    data = {
-        'type': 'shortener', 'api_url': request.form.get('api_url'), 
-        'api_key': request.form.get('api_key'), 'status': request.form.get('status')
-    }
-    settings_col.update_one({'type': 'shortener'}, {'$set': data}, upsert=True)
     return redirect(url_for('admin'))
 
 @app.route('/delete/<tmdb_id>')
 def delete_movie(tmdb_id):
     if not session.get('logged_in'): return redirect(url_for('login'))
     movies_col.delete_one({'tmdb_id': tmdb_id})
+    episodes_col.delete_many({'tmdb_id': tmdb_id})
     return redirect(url_for('admin'))
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     bot = create_bot()
-    if bot and request.headers.get('content-type') == 'application/json':
+    if bot:
         register_handlers(bot)
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
+        update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
         bot.process_new_updates([update])
         return '', 200
     return 'Forbidden', 403
 
-# ================== ডিজাইন ও টেমপ্লেট ==================
+# ================== ডিজাইন টেমপ্লেটস ==================
 
-HOME_HTML = """
-<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Movie Portal</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-<style>
-body{background:#0b0c10;color:#c5c6c7; font-family: 'Segoe UI', sans-serif;}
-.card{background:#1f2833;border:none; transition:0.3s;}
-.card:hover{transform:translateY(-10px); border:1px solid #66fcf1;}
-.card-title{font-size: 0.9rem; color:#fff;}
-a{text-decoration:none;}
+CSS = """
+body{background:#0b0c10;color:#c5c6c7; font-family: 'Poppins', sans-serif;}
 .navbar{background:#1f2833; border-bottom: 2px solid #66fcf1;}
-</style></head><body>
-<nav class="navbar navbar-dark mb-5"><div class="container"><a class="navbar-brand text-info fw-bold" href="/">🎬 MOVIE PORTAL</a></div></nav>
-<div class="container"><div class="row row-cols-2 row-cols-md-5 g-4">
-{% for m in movies %}
-<div class="col"><a href="/movie/{{m.tmdb_id}}"><div class="card h-100">
-<img src="{{m.poster}}" class="card-img-top"><div class="card-body text-center">
-<h6 class="card-title">{{m.title}}</h6><small class="text-info">{{m.lang}} | {{m.quality}}</small>
-</div></div></a></div>
-{% endfor %}
-</div></div></body></html>
+.card{background:#1f2833; border:none; border-radius:15px; overflow:hidden; transition:0.4s; position:relative; cursor:pointer;}
+.card:hover{transform: translateY(-10px); box-shadow: 0 0 20px #66fcf1; border: 1px solid #66fcf1;}
+.card::before {
+    content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+    background: conic-gradient(transparent, transparent, transparent, #66fcf1);
+    animation: rotate 4s linear infinite; z-index: 1; opacity: 0;
+}
+.card:hover::before { opacity: 1; }
+@keyframes rotate { 100% { transform: rotate(360deg); } }
+.card-content { position: relative; background: #1f2833; margin: 2px; border-radius: 13px; z-index: 2; height: calc(100% - 4px); }
+.card-img-top{height: 250px; object-fit: cover;}
+.btn-main{background:#66fcf1; color:#0b0c10; font-weight:bold; border-radius:30px; padding:12px; text-decoration:none; display:block; text-align:center;}
+.season-box{background:#1f2833; padding:15px; border-radius:10px; margin-bottom:15px; border-left: 5px solid #66fcf1;}
+.ep-btn{background:#45a29e; color:white; padding:5px 12px; margin:3px; border-radius:5px; text-decoration:none; display:inline-block;}
 """
 
-DETAILS_HTML = """
-<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{m.title}}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-<style>
-body{background:#0b0c10;color:#c5c6c7;}
-.poster{width:100%; border-radius:15px; box-shadow: 0 0 15px #66fcf1;}
-.btn-download{background:#66fcf1; color:#0b0c10; font-weight:bold; font-size:1.3rem;}
-.btn-download:hover{background:#45a29e;}
-.badge-custom{background:#1f2833; color:#66fcf1; border:1px solid #66fcf1;}
-</style></head><body>
-<div class="container py-5">
-    <div class="row">
-        <div class="col-md-4 mb-4"><img src="{{m.poster}}" class="poster"></div>
-        <div class="col-md-8">
-            <h1 class="text-white">{{m.title}}</h1>
-            <div class="mb-3">
-                <span class="badge badge-custom">⭐ {{m.rating}}</span>
-                <span class="badge badge-custom">🌐 {{m.lang}}</span>
-                <span class="badge badge-custom">💎 {{m.quality}}</span>
-            </div>
-            <p><b>Director:</b> {{m.director}}</p>
-            <p><b>Cast:</b> {{m.cast}}</p>
-            <p><b>Storyline:</b><br>{{m.story}}</p>
-            <a href="{{download_url}}" class="btn btn-download w-100 py-3 mt-3">🚀 Download Now</a>
-        </div>
-    </div>
-    {% if m.trailer %}
-    <div class="mt-5"><h3>Official Trailer</h3>
-    <div class="ratio ratio-16x9"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>
-    {% endif %}
-    <div class="text-center mt-5"><a href="/" class="btn btn-outline-info">← Home</a></div>
-</div></body></html>
-"""
+HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Portal</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'><style>{CSS}</style></head><body>" + """
+<nav class="navbar sticky-top mb-4"><div class="container"><a class="navbar-brand fw-bold text-info" href="/">🎬 PORTAL</a>
+<form class="d-flex" action="/" method="GET"><input class="form-control form-control-sm me-2" type="search" name="search" placeholder="Search..."><button class="btn btn-sm btn-outline-info" type="submit">🔍</button></form>
+</div></nav><div class="container"><div class="row row-cols-2 row-cols-md-4 row-cols-lg-6 g-4">
+{% for m in movies %}<div class="col"><a href="/movie/{{m.tmdb_id}}" style="text-decoration:none;"><div class="card h-100"><div class="card-content">
+<img src="{{m.poster}}" class="card-img-top"><div class="p-2 text-center text-white"><div style="font-size:0.8rem; height:35px; overflow:hidden;">{{m.title}}</div>
+<div class="text-info small">⭐ {{m.rating}} | {{m.year}}</div></div></div></div></a></div>{% endfor %}
+</div></div></body></html>"""
 
-ADMIN_HTML = """
-<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head>
-<body class="bg-light container py-5">
-<div class="d-flex justify-content-between mb-4"><h2>⚙️ Admin Control</h2><a href="/" class="btn btn-secondary">Site Home</a></div>
-<div class="row">
-    <div class="col-md-6 mb-4">
-        <div class="card p-3 shadow-sm"><h5>Core Settings</h5>
-        <form action="/save_config" method="POST">
-            <label>Site URL</label><input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}">
-            <label>Bot Token</label><input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}">
-            <label>TMDB API Key</label><input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}">
-            <label>Admin Chat ID</label><input name="admin_id" class="form-control mb-2" value="{{config.ADMIN_ID}}">
-            <label>Storage Channel ID</label><input name="channel_id" class="form-control mb-2" value="{{config.STORAGE_CHANNEL_ID}}">
-            <label>Auto Delete (Sec)</label><input name="delete_time" type="number" class="form-control mb-2" value="{{config.AUTO_DELETE_TIME}}">
-            <label>Protect Content</label><select name="protect" class="form-control mb-3">
-                <option value="on" {% if config.PROTECT_CONTENT == 'on' %}selected{% endif %}>ON</option>
-                <option value="off" {% if config.PROTECT_CONTENT == 'off' %}selected{% endif %}>OFF</option>
-            </select>
-            <button class="btn btn-primary w-100">Save Config</button></form></div>
-    </div>
-    <div class="col-md-6">
-        <div class="card p-3 shadow-sm mb-4"><h5>Link Shortener</h5>
-        <form action="/save_shortener" method="POST">
-            <label>API URL</label><input name="api_url" class="form-control mb-2" value="{{shortener.api_url}}">
-            <label>API Key</label><input name="api_key" class="form-control mb-2" value="{{shortener.api_key}}">
-            <label>Status</label><select name="status" class="form-control mb-2">
-                <option value="on" {% if shortener.status == 'on' %}selected{% endif %}>ON</option>
-                <option value="off" {% if shortener.status == 'off' %}selected{% endif %}>OFF</option>
-            </select><button class="btn btn-success w-100">Update Shortener</button></form></div>
-    </div>
-</div>
-<div class="card p-3"><h5>Database Movies</h5><table class="table">
-{% for m in movies %}<tr><td>{{m.title}} ({{m.quality}})</td><td><a href="/delete/{{m.tmdb_id}}" class="text-danger">Delete</a></td></tr>{% endfor %}
-</table></div></body></html>
-"""
+DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Details</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'><style>{CSS}</style></head><body>" + """
+<div class="container py-4"><div class="row"><div class="col-md-4 mb-4"><img src="{{m.poster}}" class="w-100 rounded border border-info"></div>
+<div class="col-md-8"><h1 class="text-white">{{m.title}} ({{m.year}})</h1><p class="text-info">⭐ {{m.rating}} | {{m.director}} | {{m.lang}}</p>
+<p><small>{{m.story}}</small></p><p><b>Cast:</b> {{m.cast}}</p>
+{% if m.type == 'movie' %}<a href="https://t.me/{{bot_user}}?start=m_{{m.tmdb_id}}" class="btn-main">🚀 DOWNLOAD ({{m.quality}})</a>
+{% else %}<h4 class="text-info">Seasons</h4>{% for s, eps in seasons.items() %}<div class="season-box"><h6>Season {{s}}</h6>
+{% for ep in eps %}<a href="https://t.me/{{bot_user}}?start=e_{{ep._id}}" class="ep-btn">E{{ep.episode}}</a>{% endfor %}</div>{% endfor %}{% endif %}
+</div></div>{% if m.trailer %}<div class="mt-4"><h4>Trailer</h4><div class="ratio ratio-16x9"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
+</div></body></html>"""
 
-LOGIN_HTML = """
-<!DOCTYPE html><html><head><title>Login</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head>
-<body class="d-flex align-items-center justify-content-center bg-dark" style="height:100vh;">
-<div class="card p-4" style="width:300px;"><h4>Admin Login</h4>
-<form method="POST"><input name="u" class="form-control mb-2" placeholder="User"><input name="p" type="password" class="form-control mb-3" placeholder="Pass">
-<button class="btn btn-primary w-100">Login</button></form></div></body></html>
-"""
+ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-light container py-4">
+<h3>⚙️ Dashboard</h3><form action="/save_config" method="POST" class="card p-3 mb-4"><div class="row">
+<div class="col-md-6"><label>Bot Token</label><input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}"><label>TMDB Key</label><input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}"></div>
+<div class="col-md-6"><label>Site URL</label><input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}"><label>Admin ID</label><input name="admin_id" class="form-control mb-2" value="{{config.ADMIN_ID}}"></div>
+</div><button class="btn btn-primary btn-sm">Save Config</button></form>
+<h5>Movies & Shows</h5><table class="table table-bordered">{% for m in movies %}<tr><td>{{m.title}} ({{m.year}})</td><td>
+<a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit</a> <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger">Delete</a></td></tr>{% endfor %}</table></body></html>"""
 
-# ================== রান অ্যাপ্লিকেশন ==================
+EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Movie</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-light container py-4">
+<h3>✏️ Edit: {{m.title}}</h3><form action="/admin/update" method="POST" class="card p-4 shadow-sm">
+<input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
+<div class="row"><div class="col-md-6">
+<label>Title</label><input name="title" class="form-control mb-2" value="{{m.title}}">
+<label>Year</label><input name="year" class="form-control mb-2" value="{{m.year}}">
+<label>Rating</label><input name="rating" class="form-control mb-2" value="{{m.rating}}">
+<label>Language</label><input name="lang" class="form-control mb-2" value="{{m.lang}}">
+<label>Quality</label><input name="quality" class="form-control mb-2" value="{{m.quality}}">
+</div><div class="col-md-6">
+<label>Poster URL</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
+<label>Trailer URL</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
+<label>Director</label><input name="director" class="form-control mb-2" value="{{m.director}}">
+<label>Cast</label><input name="cast" class="form-control mb-2" value="{{m.cast}}">
+</div></div><label>Storyline</label><textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea>
+<button class="btn btn-success">Update Movie Details</button> <a href="/admin" class="btn btn-secondary">Cancel</a>
+</form></body></html>"""
+
+LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-dark d-flex align-items-center" style="height:100vh;">
+<div class="container card p-4 mx-auto" style="max-width:350px;"><h4>ADMIN LOGIN</h4><form method="POST"><input name="u" class="form-control mb-2" placeholder="User"><input name="p" type="password" class="form-control mb-3" placeholder="Pass"><button class="btn btn-primary w-100">Login</button></form></div></body></html>"""
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
