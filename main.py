@@ -11,7 +11,21 @@ from pymongo import MongoClient
 from bson import ObjectId
 from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
 
+import telebot
+import requests
+import os
+import time
+import threading
+import urllib.parse
+import re
+import math
+from telebot import types
+from pymongo import MongoClient
+from bson import ObjectId
+from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
+
 # ================== ডাটাবেস সেটআপ ==================
+# আপনার MongoDB URI এখানে দিন অথবা Environment Variable ব্যবহার করুন
 MONGO_URI = os.environ.get('MONGO_URI', "YOUR_MONGODB_URI_HERE") 
 
 try:
@@ -156,33 +170,33 @@ def register_handlers(bot_inst):
             bot_inst.reply_to(message, "❌ কিছুই পাওয়া যায়নি।")
             return
 
-        bot_inst.send_message(message.chat.id, "🔍 সার্চ রেজাল্ট নিচে দেওয়া হলো:")
+        bot_inst.send_message(message.chat.id, "🔍 সার্চ রেজাল্ট (পোস্টারসহ):")
         
-        # প্রতিটি রেজাল্টের জন্য পোস্টারসহ মেসেজ পাঠানো
-        for m in res[:5]: # ৫টি রেজাল্ট পর্যন্ত লিমিট করা হয়েছে
+        for m in res[:5]: # বটের মেসেজ লিমিট করার জন্য ৫টি
             if m['media_type'] not in ['movie', 'tv']: continue
             name = m.get('title') or m.get('name')
             year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
-            poster_path = m.get('poster_path')
-            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else "https://via.placeholder.com/500x750?text=No+Poster"
+            p_path = m.get('poster_path')
+            p_url = f"https://image.tmdb.org/t/p/w500{p_path}" if p_path else "https://via.placeholder.com/500x750?text=No+Poster"
             
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton(text="✅ Select & Upload", callback_data=f"sel_{m['media_type']}_{m['id']}"))
+            markup.add(types.InlineKeyboardButton(text="✅ সিলেক্ট করুন", callback_data=f"sel_{m['media_type']}_{m['id']}"))
             
-            bot_inst.send_photo(
-                message.chat.id, 
-                poster_url, 
-                caption=f"🎬 **{name} ({year})**\n━━━━━━━━━━━━━━━\n🏷 Media: {m['media_type'].upper()}\n⭐ Rating: {m.get('vote_average')}\n━━━━━━━━━━━━━━━",
-                reply_markup=markup,
-                parse_mode="Markdown"
-            )
+            try:
+                bot_inst.send_photo(
+                    message.chat.id, p_url, 
+                    caption=f"🎬 **{name} ({year})**\n━━━━━━━━━━━━━━━\n🏷 Media: {m['media_type'].upper()}\n⭐ Rating: {m.get('vote_average')}\n━━━━━━━━━━━━━━━",
+                    reply_markup=markup, parse_mode="Markdown"
+                )
+            except:
+                # যদি ইমেজ পাঠাতে ব্যর্থ হয় তবে টেক্সট হিসেবে পাঠাবে
+                bot_inst.send_message(message.chat.id, f"🎬 {name} ({year})", reply_markup=markup)
 
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
     def handle_selection(call):
         _, m_type, m_id = call.data.split('_')
         admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id, 'temp_files': []}
         
-        # সিলেকশনের পর আগের লিস্ট ক্লিয়ার করার অপশন নেই, তবে নতুন মেসেজ পাঠানো হচ্ছে
         if m_type == 'movie':
             ask_movie_lang(call.message, m_id)
         else:
@@ -371,6 +385,7 @@ def home():
     total = movies_col.count_documents(query_filter)
     movies = list(movies_col.find(query_filter).sort('_id', -1).skip(skip).limit(limit))
     
+    # স্লাইডারের জন্য সর্বশেষ ৬টি মুভি
     slider_movies = list(movies_col.find({}).sort('_id', -1).limit(6))
     
     pages = math.ceil(total / limit)
@@ -430,7 +445,7 @@ def admin():
         return render_template_string(ADMIN_ADD_HTML, config=config, categories=CATEGORIES)
     elif tab == 'settings':
         return render_template_string(ADMIN_SETTINGS_HTML, config=config)
-    else:
+    else: # dashboard
         stats = {
             'users': users_col.count_documents({}),
             'movies': movies_col.count_documents({})
@@ -579,7 +594,7 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates ==================
+# ================== HTML Templates (Styles & Layout) ==================
 
 COMMON_STYLE = """
 <style>
@@ -609,7 +624,7 @@ COMMON_STYLE = """
 
     @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
 
-    /* Search Results Styles */
+    /* Search Results Container (Admin Panel) */
     .search-results-container { position: absolute; width: 100%; background: white; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); z-index: 1000; max-height: 450px; overflow-y: auto; display: none; margin-top: 5px; border: 1px solid #ddd; }
     .search-item { display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: 0.2s; color: #333; }
     .search-item:hover { background: #f8f9fa; }
