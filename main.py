@@ -20,7 +20,7 @@ try:
     config_col = db['bot_config']      
     movies_col = db['movies_data']      
     episodes_col = db['episodes_data']
-    users_col = db['bot_users'] # নতুন: ইউজার ট্র্যাক করার জন্য
+    users_col = db['bot_users'] # নতুন: ব্রডকাস্টের জন্য ইউজার ট্র্যাক
     print("✅ MongoDB Connected Successfully!")
 except Exception as e:
     print(f"❌ MongoDB Connection Error: {e}")
@@ -32,6 +32,7 @@ ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "password123"
 
 admin_states = {}
+bot = None
 
 # --- [সহায়ক ফাংশনসমূহ] ---
 def get_config():
@@ -71,76 +72,74 @@ def create_bot():
             return None
     return None
 
-def auto_delete_task(bot, chat_id, msg_id, delay):
+def auto_delete_task(bot_inst, chat_id, msg_id, delay):
     if delay > 0:
         time.sleep(delay)
         try:
-            bot.delete_message(chat_id, msg_id)
+            bot_inst.delete_message(chat_id, msg_id)
         except: pass
 
 # --- [টেলিগ্রাম বট হ্যান্ডলার] ---
-def register_handlers(bot):
-    if not bot: return
+def register_handlers(bot_inst):
+    if not bot_inst: return
 
-    @bot.message_handler(commands=['start'])
+    @bot_inst.message_handler(commands=['start'])
     def start(message):
-        # নতুন: ইউজার সেভ করা
+        # ইউজার সেভ করা (ব্রডকাস্ট ফিচারের জন্য)
         if not users_col.find_one({'user_id': message.from_user.id}):
             users_col.insert_one({'user_id': message.from_user.id, 'name': message.from_user.first_name})
             
         config = get_config()
         if len(message.text.split()) > 1:
             cmd_data = message.text.split()[1]
-            file_to_send = None
             if cmd_data.startswith('dl_'):
                 file_to_send = cmd_data.replace('dl_', '')
-            
-            if file_to_send:
                 protect = True if config.get('PROTECT_CONTENT') == 'on' else False
                 try:
-                    sent_msg = bot.copy_message(message.chat.id, int(config['STORAGE_CHANNEL_ID']), int(file_to_send), protect_content=protect)
+                    sent_msg = bot_inst.copy_message(message.chat.id, int(config['STORAGE_CHANNEL_ID']), int(file_to_send), protect_content=protect)
                     delay = int(config.get('AUTO_DELETE_TIME', 0))
                     if delay > 0:
-                        bot.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
-                        threading.Thread(target=auto_delete_task, args=(bot, message.chat.id, sent_msg.message_id, delay)).start()
+                        bot_inst.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
+                        threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, sent_msg.message_id, delay)).start()
                 except:
-                    bot.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি।")
+                    bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি।")
                 return
-        bot.reply_to(message, "🎬 মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।")
+        bot_inst.reply_to(message, "🎬 মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।")
 
-    @bot.message_handler(commands=['stats'])
+    @bot_inst.message_handler(commands=['stats'])
     def stats(message):
         config = get_config()
         if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
         u_count = users_col.count_documents({})
         m_count = movies_col.count_documents({})
-        bot.reply_to(message, f"📊 বটের অবস্থা:\n\n👤 মোট ইউজার: {u_count}\n🎬 মোট মুভি/শো: {m_count}")
+        bot_inst.reply_to(message, f"📊 বটের অবস্থা:\n\n👤 মোট ইউজার: {u_count}\n🎬 মোট মুভি/শো: {m_count}")
 
-    @bot.message_handler(commands=['broadcast'])
+    @bot_inst.message_handler(commands=['broadcast'])
     def broadcast(message):
         config = get_config()
         if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
         if not message.reply_to_message:
-            bot.reply_to(message, "⚠️ যে মেসেজটি পাঠাতে চান সেটি রিপ্লাই করে /broadcast লিখুন।")
+            bot_inst.reply_to(message, "⚠️ যে মেসেজটি পাঠাতে চান সেটি রিপ্লাই করে /broadcast লিখুন।")
             return
-        
         users = users_col.find({})
         count = 0
         for u in users:
             try:
-                bot.copy_message(u['user_id'], message.chat.id, message.reply_to_message.message_id)
+                bot_inst.copy_message(u['user_id'], message.chat.id, message.reply_to_message.message_id)
                 count += 1
-                time.sleep(0.1) # ফ্লাড কন্ট্রোল
+                time.sleep(0.05)
             except: pass
-        bot.send_message(message.chat.id, f"✅ {count} জন ইউজারের কাছে পাঠানো হয়েছে।")
+        bot_inst.send_message(message.chat.id, f"✅ {count} জন ইউজারের কাছে পাঠানো হয়েছে।")
 
-    @bot.message_handler(commands=['post'])
+    @bot_inst.message_handler(commands=['post'])
     def post_search(message):
         config = get_config()
-        if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
+        if str(message.from_user.id) != str(config.get('ADMIN_ID')):
+            bot_inst.reply_to(message, f"🚫 আপনি এডমিন নন। আপনার আইডি: `{message.from_user.id}`। এটি এডমিন প্যানেলে সেট করুন।")
+            return
         query = message.text.replace('/post', '').strip()
         if not query:
-            bot.reply_to(message, "⚠️ মুভির নাম লিখুন। উদাহরণ: `/post Avatar`")
+            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। উদাহরণ: `/post Avatar`")
             return
         
         tmdb_api = config.get('TMDB_API_KEY')
@@ -149,7 +148,7 @@ def register_handlers(bot):
         except: res = []
 
         if not res:
-            bot.reply_to(message, "❌ কিছুই খুঁজে পাওয়া যায়নি।")
+            bot_inst.reply_to(message, "❌ কিছুই খুঁজে পাওয়া যায়নি।")
             return
 
         markup = types.InlineKeyboardMarkup()
@@ -158,74 +157,74 @@ def register_handlers(bot):
             name = m.get('title') or m.get('name')
             year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
             markup.add(types.InlineKeyboardButton(text=f"[{m['media_type'].upper()}] {name} ({year})", callback_data=f"sel_{m['media_type']}_{m['id']}"))
-        bot.send_message(message.chat.id, "🔍 কি আপলোড করতে চান সিলেক্ট করুন:", reply_markup=markup)
+        bot_inst.send_message(message.chat.id, "🔍 কি আপলোড করতে চান সিলেক্ট করুন:", reply_markup=markup)
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
+    @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
     def handle_selection(call):
         _, m_type, m_id = call.data.split('_')
         if m_type == 'movie':
             markup = types.InlineKeyboardMarkup()
             for l in ["Bangla", "Hindi", "English", "Multi"]:
                 markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{m_id}_{l}"))
-            bot.edit_message_text("🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+            bot_inst.edit_message_text("🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
         else:
             admin_states[call.from_user.id] = {'type': 'tv', 'tmdb_id': m_id}
-            msg = bot.send_message(call.message.chat.id, "📺 সিজন নম্বর লিখুন:")
-            bot.register_next_step_handler(msg, get_season)
+            msg = bot_inst.send_message(call.message.chat.id, "📺 সিজন নম্বর লিখুন:")
+            bot_inst.register_next_step_handler(msg, get_season)
 
     def get_season(message):
         uid = message.from_user.id
         if uid in admin_states:
             admin_states[uid]['season'] = message.text
-            bot.send_message(message.chat.id, "🔢 এপিসোড নম্বর লিখুন:")
-            bot.register_next_step_handler(message, get_episode)
+            bot_inst.send_message(message.chat.id, "🔢 এপিসোড নম্বর লিখুন:")
+            bot_inst.register_next_step_handler(message, get_episode)
 
     def get_episode(message):
         uid = message.from_user.id
         if uid in admin_states:
             admin_states[uid]['episode'] = message.text
-            bot.send_message(message.chat.id, "📥 কোয়ালিটি লিখুন (যেমন: 720p):")
-            bot.register_next_step_handler(message, get_tv_quality)
+            bot_inst.send_message(message.chat.id, "📥 কোয়ালিটি লিখুন (যেমন: 720p):")
+            bot_inst.register_next_step_handler(message, get_tv_quality)
 
     def get_tv_quality(message):
         uid = message.from_user.id
         if uid in admin_states:
             admin_states[uid]['qual'] = message.text
-            bot.send_message(message.chat.id, "📥 ভিডিও ফাইলটি পাঠান:")
+            bot_inst.send_message(message.chat.id, "📥 ভিডিও ফাইলটি পাঠান:")
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_m_'))
+    @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('lang_m_'))
     def movie_qual(call):
         _, _, mid, lang = call.data.split('_')
         markup = types.InlineKeyboardMarkup()
         for q in ["480p", "720p", "1080p", "4K", "Custom"]:
             markup.add(types.InlineKeyboardButton(text=q, callback_data=f"qual_m_{mid}_{lang}_{q}"))
-        bot.edit_message_text("💎 কোয়ালিটি সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        bot_inst.edit_message_text("💎 কোয়ালিটি সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('qual_m_'))
+    @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('qual_m_'))
     def movie_file_ask(call):
         _, _, mid, lang, qual = call.data.split('_')
         if qual == "Custom":
             admin_states[call.from_user.id] = {'type': 'movie', 'tmdb_id': mid, 'lang': lang}
-            msg = bot.send_message(call.message.chat.id, "🖊️ কাস্টম কোয়ালিটি লিখুন:")
-            bot.register_next_step_handler(msg, get_custom_qual)
+            msg = bot_inst.send_message(call.message.chat.id, "🖊️ কাস্টম কোয়ালিটি লিখুন:")
+            bot_inst.register_next_step_handler(msg, get_custom_qual)
         else:
             admin_states[call.from_user.id] = {'type': 'movie', 'tmdb_id': mid, 'lang': lang, 'qual': qual}
-            bot.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান:")
+            bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান:")
 
     def get_custom_qual(message):
         uid = message.from_user.id
         if uid in admin_states:
             admin_states[uid]['qual'] = message.text
-            bot.send_message(message.chat.id, "📥 মুভি ফাইলটি এখানে পাঠান:")
+            bot_inst.send_message(message.chat.id, "📥 মুভি ফাইলটি এখানে পাঠান:")
 
-    @bot.message_handler(content_types=['video', 'document'])
+    @bot_inst.message_handler(content_types=['video', 'document'])
     def save_media(message):
         uid = message.from_user.id
         config = get_config()
         if uid not in admin_states: return
         state = admin_states[uid]
         try:
-            sent_msg = bot.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
+            sent_msg = bot_inst.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
             tmdb_api = config['TMDB_API_KEY']
             tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
             m = requests.get(tmdb_url).json()
@@ -256,10 +255,32 @@ def register_handlers(bot):
                     {'$set': {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
                      '$push': {'files': file_data}}, upsert=True
                 )
-            bot.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}")
+            bot_inst.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}")
             del admin_states[uid]
         except Exception as e:
-            bot.send_message(message.chat.id, f"❌ এরর: {e}")
+            bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
+
+# --- [বট ইনিট ফাংশন - অটো ওয়েবহুক সেটআপের জন্য] ---
+def init_bot_service():
+    global bot
+    config = get_config()
+    token = config.get('BOT_TOKEN')
+    site_url = config.get('SITE_URL')
+    
+    if token and len(token) > 20:
+        try:
+            bot = telebot.TeleBot(token, threaded=False)
+            register_handlers(bot)
+            if site_url:
+                webhook_url = f"{site_url}/webhook"
+                bot.remove_webhook()
+                time.sleep(1)
+                bot.set_webhook(url=webhook_url)
+                print(f"✅ Webhook Active: {webhook_url}")
+            return bot
+        except Exception as e:
+            print(f"❌ Bot Initialization Failure: {e}")
+    return None
 
 # --- [FLASK ROUTES] ---
 
@@ -267,7 +288,7 @@ def register_handlers(bot):
 def home():
     q = request.args.get('search')
     page = int(request.args.get('page', 1))
-    limit = 24 # প্রতি পেজে ২৪টি মুভি
+    limit = 24 
     skip = (page - 1) * limit
     
     if q:
@@ -286,10 +307,9 @@ def movie_details(tmdb_id):
     if not movie: return "Not Found", 404
     config = get_config()
     bot_user = ""
-    try:
-        bot = create_bot()
-        if bot: bot_user = bot.get_me().username
-    except: pass
+    if bot:
+        try: bot_user = bot.get_me().username
+        except: pass
 
     if 'files' in movie:
         for f in movie['files']:
@@ -424,6 +444,7 @@ def save_config():
         'PROTECT_CONTENT': request.form.get('protect')
     }
     config_col.update_one({'type': 'core_settings'}, {'$set': data}, upsert=True)
+    init_bot_service() # কনফিগ সেভ হলে সার্ভিস রি-ইনিট হবে
     return redirect(url_for('admin'))
 
 @app.route('/delete/<tmdb_id>')
@@ -435,9 +456,7 @@ def delete_movie(tmdb_id):
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    bot = create_bot()
     if bot:
-        register_handlers(bot)
         update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
         bot.process_new_updates([update])
     return '', 200
@@ -455,8 +474,8 @@ COMMON_STYLE = """
     .navbar { background: #1f2833; border-bottom: 2px solid #66fcf1; }
     .poster-img { height: 260px; width: 100%; object-fit: cover; }
     .admin-box { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 20px; }
-    .pagination .page-link { background: #1f2833; border-color: #45a29e; color: #66fcf1; }
-    .pagination .page-item.active .page-link { background: #66fcf1; border-color: #66fcf1; color: #0b0c10; }
+    .pagination .page-link { background: #1f2833; color: #66fcf1; border: 1px solid #45a29e; }
+    .pagination .active .page-link { background: #66fcf1; color: #000; border: 1px solid #66fcf1; }
 </style>
 """
 
@@ -481,28 +500,20 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
 </a></div>
 {% endfor %}
 </div>
-
-{% if pages > 1 %}
-<nav class="mt-5"><ul class="pagination justify-content-center">
+<nav class="mt-4"><ul class="pagination justify-content-center">
     {% for p in range(1, pages + 1) %}
-    <li class="page-item {% if p == page %}active{% endif %}">
-        <a class="page-link" href="/?page={{p}}{% if query %}&search={{query}}{% endif %}">{{p}}</a>
-    </li>
+    <li class="page-item {% if p == page %}active{% endif %}"><a class="page-link" href="/?page={{p}}{% if query %}&search={{query}}{% endif %}">{{p}}</a></li>
     {% endfor %}
 </ul></nav>
-{% endif %}
-</div><br><br></body></html>"""
+</div></body></html>"""
 
 DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>" + """
-<title>{{m.title}} ({{m.year}}) - Movie Portal</title>
+<title>{{m.title}} ({{m.year}})</title>
 <meta property="og:title" content="{{m.title}} ({{m.year}})">
-<meta property="og:description" content="{{m.story[:150]}}...">
 <meta property="og:image" content="{{m.poster}}">
-<meta property="og:type" content="video.movie">
-<link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>
-""" + f"{COMMON_STYLE}</head><body>" + """
+<meta property="og:description" content="{{m.story[:150]}}...">
+<link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>""" + f"{COMMON_STYLE}</head><body>" + """
 <div class="container py-5">
-    <div class="mb-3"><a href="/" class="text-info" style="text-decoration:none;">⬅️ Back to Home</a></div>
     <div class="row">
         <div class="col-md-4 mb-4"><img src="{{m.poster}}" class="w-100 rounded border border-info shadow-lg"></div>
         <div class="col-md-8">
@@ -546,14 +557,15 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
 <div class="row">
     <div class="col-md-5">
         <div class="admin-box">
-            <h5>🔗 Fetch from Link (IMDb/TMDB)</h5>
-            <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="Paste Link..."><button class="btn btn-primary" onclick="fetchData()">Fetch</button></div>
+            <h5>🔗 Fetch Data</h5>
+            <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="IMDb/TMDB Link..."><button class="btn btn-primary" onclick="fetchData()">Fetch</button></div>
             <hr>
             <form action="/admin/manual_add" method="POST">
                 <input id="f_title" name="title" class="form-control mb-2" placeholder="Title" required>
                 <input id="f_id" name="tmdb_id" class="form-control mb-2" placeholder="TMDB ID" required>
                 <input id="f_type" name="type" type="hidden" value="movie">
-                <div class="row g-2 mb-2"><div class="col"><input id="f_year" name="year" class="form-control" placeholder="Year"></div><div class="col"><input id="f_rating" name="rating" class="form-control" placeholder="Rating"></div></div>
+                <input id="f_year" name="year" class="form-control mb-2" placeholder="Year">
+                <input id="f_rating" name="rating" class="form-control mb-2" placeholder="Rating">
                 <input id="f_poster" name="poster" class="form-control mb-2" placeholder="Poster URL">
                 <input id="f_trailer" name="trailer" class="form-control mb-2" placeholder="Trailer Link">
                 <textarea id="f_story" name="story" class="form-control mb-2" placeholder="Storyline"></textarea>
@@ -566,7 +578,7 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
             <h5>🔧 Global Configuration</h5>
             <form action="/save_config" method="POST">
                 <label class="small fw-bold">Site URL (https://yourdomain.com)</label>
-                <input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}">
+                <input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}" placeholder="https://domain.com">
                 <label class="small fw-bold">Bot Token</label>
                 <input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}">
                 <label class="small fw-bold">Admin Telegram ID</label>
@@ -582,8 +594,8 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
                     <option value="off" {% if config.PROTECT_CONTENT == 'off' %}selected{% endif %}>OFF</option>
                     <option value="on" {% if config.PROTECT_CONTENT == 'on' %}selected{% endif %}>ON</option>
                 </select>
-                <label class="small fw-bold">Shortener URL & API Key</label>
-                <input name="s_url" class="form-control mb-1" placeholder="Shortener Domain" value="{{config.SHORTENER_URL}}">
+                <label class="small fw-bold">Shortener Domain & API Key</label>
+                <input name="s_url" class="form-control mb-1" placeholder="e.g. gplinks.in" value="{{config.SHORTENER_URL}}">
                 <input name="s_api" class="form-control mb-2" placeholder="API Key" value="{{config.SHORTENER_API}}">
                 <button class="btn btn-dark w-100">Update Config</button>
             </form>
@@ -593,10 +605,10 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
         <div class="admin-box">
             <form class="d-flex mb-3"><input name="q" class="form-control me-2" placeholder="Search..." value="{{q or ''}}"><button class="btn btn-info">Search</button></form>
             <table class="table table-sm">
-                <thead><tr><th>Title</th><th>Year</th><th>Action</th></tr></thead>
+                <thead><tr><th>Title</th><th>Action</th></tr></thead>
                 {% for m in movies %}
-                <tr><td>{{m.title}}</td><td>{{m.year}}</td><td>
-                    <a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit/Files</a>
+                <tr><td>{{m.title}} ({{m.year}})</td><td>
+                    <a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit</a>
                     <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Del</a>
                 </td></tr>
                 {% endfor %}
@@ -607,7 +619,6 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
 <script>
 function fetchData() {
     let u = $('#url_in').val();
-    if(!u) return alert('Link please!');
     $.post('/admin/fetch_info', {url: u}, function(d) {
         if(d.error) return alert(d.error);
         $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year);
@@ -623,16 +634,13 @@ EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Movie</title><link rel="st
 <div class="row">
     <div class="col-md-6">
         <div class="card p-4 shadow mb-4">
-            <h5>✏️ Edit Details: {{m.title}}</h5>
+            <h5>✏️ Edit: {{m.title}}</h5>
             <form action="/admin/update" method="POST">
                 <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
                 <label>Title</label><input name="title" class="form-control mb-2" value="{{m.title}}">
                 <label>Year</label><input name="year" class="form-control mb-2" value="{{m.year}}">
                 <label>Rating</label><input name="rating" class="form-control mb-2" value="{{m.rating}}">
                 <label>Poster</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
-                <label>Trailer</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
-                <label>Director</label><input name="director" class="form-control mb-2" value="{{m.director}}">
-                <label>Cast</label><input name="cast" class="form-control mb-2" value="{{m.cast}}">
                 <label>Storyline</label><textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea>
                 <button class="btn btn-success w-100">Update Metadata</button>
             </form>
@@ -640,11 +648,11 @@ EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Movie</title><link rel="st
     </div>
     <div class="col-md-6">
         <div class="card p-4 shadow">
-            <h5>➕ Add Quality Button</h5>
+            <h5>➕ Add Link</h5>
             <form action="/admin/add_file" method="POST" class="mb-4">
                 <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
-                <input name="quality" class="form-control mb-2" placeholder="Quality (e.g. 720p Bangla)" required>
-                <input name="file_id" class="form-control mb-2" placeholder="Storage Message ID" required>
+                <input name="quality" class="form-control mb-2" placeholder="Label (e.g. 720p Dual)" required>
+                <input name="file_id" class="form-control mb-2" placeholder="Telegram Msg ID" required>
                 <button class="btn btn-info w-100">Add Link</button>
             </form>
             <h6>Current Links:</h6>
@@ -661,7 +669,7 @@ EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Movie</title><link rel="st
                 {% endif %}
             </ul>
         </div>
-        <div class="mt-3 text-center"><a href="/admin" class="btn btn-secondary">Back to Admin</a></div>
+        <div class="mt-3 text-center"><a href="/admin" class="btn btn-secondary">Back</a></div>
     </div>
 </div></body></html>"""
 
@@ -670,6 +678,10 @@ LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="styles
     <h4 class="text-center">ADMIN LOGIN</h4><hr>
     <form method="POST"><input name="u" class="form-control mb-2" placeholder="User"><input name="p" type="password" class="form-control mb-3" placeholder="Pass"><button class="btn btn-primary w-100">Login</button></form>
 </div></body></html>"""
+
+# অ্যাপ শুরু হওয়ার সময় বট অটো কনফিগার করার লজিক
+with app.app_context():
+    init_bot_service()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
