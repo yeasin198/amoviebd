@@ -9,27 +9,27 @@ from bson import ObjectId
 from flask import Flask, render_template_string, redirect, url_for, request, session
 
 # ================== ডাটাবেস সেটআপ ==================
-# আপনার MongoDB URI এনভায়রনমেন্ট ভেরিয়েবলে দিন অথবা এখানে সরাসরি বসান
+# আপনার MongoDB URI অবশ্যই Environment Variable এ দিন অথবা এখানে সরাসরি বসান
 MONGO_URI = os.environ.get('MONGO_URI', "YOUR_MONGODB_URI_HERE") 
 
 try:
     client = MongoClient(MONGO_URI)
     db = client['movie_portal_db']
-    config_col = db['bot_config']     # কনফিগারেশন
-    movies_col = db['movies_data']     # মুভি ও শো-র সাধারণ তথ্য
-    episodes_col = db['episodes_data'] # টিভি শো-র সিজন ও এপিসোড ফাইল
+    config_col = db['bot_config']      # বটের সেটিংস সেভ করার জন্য
+    movies_col = db['movies_data']      # মুভি ও শো-র সাধারণ তথ্য
+    episodes_col = db['episodes_data']  # টিভি শো-র সিজন ও এপিসোড ফাইল
     print("✅ MongoDB Connected Successfully!")
 except Exception as e:
     print(f"❌ MongoDB Connection Error: {e}")
 
 app = Flask(__name__)
-app.secret_key = "ultimate_portal_secret_key_123"
+app.secret_key = "ultimate_portal_final_secret_key_123"
 
 # ডিফল্ট অ্যাডমিন প্যানেল লগইন ক্রেডেনশিয়াল
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "password123"
 
-# বটের জন্য গ্লোবাল স্টেট
+# বটের জন্য গ্লোবাল স্টেট ট্র্যাকার
 admin_states = {}
 
 # --- [সহায়ক ফাংশনসমূহ] ---
@@ -49,11 +49,14 @@ def get_config():
     return conf
 
 def create_bot():
-    """বট অবজেক্ট তৈরি করে"""
+    """বট অবজেক্ট তৈরি করে (টোকেন চেক সহ)"""
     config = get_config()
     token = config.get('BOT_TOKEN')
-    if token and len(token) > 20: # টোকেন ভ্যালিড কিনা চেক
-        return telebot.TeleBot(token, threaded=False)
+    if token and len(token) > 20:
+        try:
+            return telebot.TeleBot(token, threaded=False)
+        except:
+            return None
     return None
 
 def auto_delete_task(bot, chat_id, msg_id, delay):
@@ -102,10 +105,10 @@ def register_handlers(bot):
                     
                     delay = int(config.get('AUTO_DELETE_TIME', 0))
                     if delay > 0:
-                        bot.send_message(message.chat.id, f"⚠️ এই ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
+                        bot.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
                         threading.Thread(target=auto_delete_task, args=(bot, message.chat.id, sent_msg.message_id, delay)).start()
                 except:
-                    bot.send_message(message.chat.id, "❌ ফাইল পাঠাতে সমস্যা হয়েছে। স্টোরেজ চ্যানেল আইডি চেক করুন।")
+                    bot.send_message(message.chat.id, "❌ ফাইল পাঠাতে সমস্যা হয়েছে। স্টোরেজ চ্যানেল আইডি বা বটের পারমিশন চেক করুন।")
                 return
             else:
                 bot.send_message(message.chat.id, "❌ দুঃখিত, ফাইলটি পাওয়া যায়নি।")
@@ -155,8 +158,9 @@ def register_handlers(bot):
                 markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{m_id}_{l}"))
             bot.edit_message_text("🌐 মুভির অডিও ল্যাঙ্গুয়েজ সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
         else:
+            # টিভি শো-র জন্য সিজন প্রম্পট
             admin_states[call.from_user.id] = {'type': 'tv', 'tmdb_id': m_id}
-            msg = bot.edit_message_text("📺 সিজন নম্বর লিখুন (যেমন: 1):", call.message.chat.id, call.message.message_id)
+            msg = bot.send_message(call.message.chat.id, "📺 এটি টিভি শো। সিজন নম্বর লিখুন (যেমন: 1):")
             bot.register_next_step_handler(msg, get_season)
 
     def get_season(message):
@@ -185,7 +189,7 @@ def register_handlers(bot):
     def movie_file_ask(call):
         _, _, mid, lang, qual = call.data.split('_')
         admin_states[call.from_user.id] = {'type': 'movie', 'tmdb_id': mid, 'lang': lang, 'qual': qual}
-        bot.edit_message_text("📥 এবার মুভি ফাইলটি এখানে পাঠান:", call.message.chat.id, call.message.message_id)
+        bot.send_message(call.message.chat.id, "📥 এবার মুভি ফাইলটি এখানে পাঠান:")
 
     # ৫. ফাইল হ্যান্ডলিং ও সেভিং
     @bot.message_handler(content_types=['video', 'document'])
@@ -199,34 +203,41 @@ def register_handlers(bot):
             sent_msg = bot.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
             tmdb_api = config['TMDB_API_KEY']
             
-            # TMDB থেকে বিস্তারিত তথ্য সংগ্রহ
+            # TMDB থেকে বিস্তারিত তথ্য সংগ্রহ (Credits ও Videos সহ)
             tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
             m = requests.get(tmdb_url).json()
             
-            title = m.get('title') or m.get('name')
+            title = m.get('title') or m.get('name', 'Unknown')
             year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
             cast = ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]])
             director = next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A')
             trailer_key = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
 
-            # ফিক্সড ট্রেলার লাইন
             movie_info = {
                 'tmdb_id': str(state['tmdb_id']), 'type': state['type'], 'title': title, 'year': year,
                 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
                 'rating': str(round(m.get('vote_average', 0), 1)), 'story': m.get('overview', 'N/A'),
                 'cast': cast, 'director': director,
-                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else ""
+                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else "",
+                'lang': state.get('lang', 'N/A'), 'quality': state.get('qual', 'HD')
             }
 
             if state['type'] == 'movie':
-                movie_info.update({'file_id': sent_msg.message_id, 'lang': state['lang'], 'quality': state['qual']})
+                movie_info.update({'file_id': sent_msg.message_id})
                 movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
             else:
+                # টিভি শো এর মেইন তথ্য সেভ
                 movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
+                # এপিসোড আলাদাভাবে সেভ
+                ep_data = {
+                    'tmdb_id': str(state['tmdb_id']), 'season': int(state['season']), 
+                    'episode': int(state['episode']), 'file_id': sent_msg.message_id
+                }
                 episodes_col.update_one(
-                    {'tmdb_id': str(state['tmdb_id']), 'season': int(state['season']), 'episode': int(state['episode'])},
-                    {'$set': {'file_id': sent_msg.message_id}}, upsert=True
+                    {'tmdb_id': ep_data['tmdb_id'], 'season': ep_data['season'], 'episode': ep_data['episode']},
+                    {'$set': ep_data}, upsert=True
                 )
+            
             bot.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}")
             del admin_states[uid]
         except Exception as e:
@@ -244,7 +255,7 @@ def home():
             movies = list(movies_col.find().sort('_id', -1))
         return render_template_string(HOME_HTML, movies=movies, query=q)
     except Exception as e:
-        return f"Database Error: {e}. Please visit /login to configure settings.", 500
+        return f"Database/Internal Error: {e}. Please check /login.", 500
 
 @app.route('/movie/<tmdb_id>')
 def movie_details(tmdb_id):
@@ -261,7 +272,7 @@ def movie_details(tmdb_id):
             except: pass
 
         seasons_data = {}
-        if movie['type'] == 'tv':
+        if movie.get('type') == 'tv':
             eps = list(episodes_col.find({'tmdb_id': tmdb_id}).sort([('season', 1), ('episode', 1)]))
             for e in eps:
                 s_num = e['season']
@@ -270,8 +281,9 @@ def movie_details(tmdb_id):
 
         return render_template_string(DETAILS_HTML, m=movie, seasons=seasons_data, bot_user=bot_user)
     except Exception as e:
-        return f"Internal Error: {e}", 500
+        return f"Error: {e}", 500
 
+# অ্যাডমিন প্যানেল লগইন
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -349,12 +361,13 @@ def webhook():
 COMMON_STYLE = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
-    body { background: #0b0c10; color: #c5c6c7; font-family: 'Poppins', sans-serif; }
+    body { background: #0b0c10; color: #c5c6c7; font-family: 'Poppins', sans-serif; overflow-x: hidden; }
     .navbar { background: #1f2833; border-bottom: 2px solid #66fcf1; }
-    .btn-custom { background: #66fcf1; color: #0b0c10; font-weight: 600; border-radius: 30px; }
+    
+    /* নিয়ন গ্লোয়িং বর্ডার ইফেক্ট */
     .movie-card {
         background: #1f2833; border-radius: 15px; overflow: hidden; position: relative;
-        transition: 0.4s; cursor: pointer; border: 1px solid transparent;
+        transition: 0.4s; cursor: pointer; border: 1px solid transparent; height: 100%;
     }
     .movie-card:hover {
         transform: translateY(-10px);
@@ -369,11 +382,15 @@ COMMON_STYLE = """
     .movie-card:hover::before { opacity: 1; }
     @keyframes rotate { 100% { transform: rotate(360deg); } }
     .card-inner { position: relative; background: #1f2833; margin: 2px; border-radius: 13px; z-index: 2; height: calc(100% - 4px); }
-    .poster-img { height: 280px; width: 100%; object-fit: cover; border-radius: 13px 13px 0 0; }
-    .badge-type { position: absolute; top: 10px; left: 10px; background: #66fcf1; color: #0b0c10; font-weight: bold; padding: 2px 8px; border-radius: 5px; z-index: 10; font-size: 0.7rem; }
+    
+    .poster-img { height: 260px; width: 100%; object-fit: cover; border-radius: 13px 13px 0 0; }
+    .badge-type { position: absolute; top: 10px; left: 10px; background: #66fcf1; color: #0b0c10; font-weight: bold; padding: 2px 8px; border-radius: 5px; z-index: 10; font-size: 0.7rem; text-transform: uppercase;}
+    .badge-year { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: #fff; padding: 2px 8px; border-radius: 5px; z-index: 10; font-size: 0.7rem; }
+    
     .season-box { background: #1f2833; border-radius: 10px; padding: 15px; margin-bottom: 15px; border-left: 5px solid #66fcf1; }
     .ep-link { background: #45a29e; color: white; padding: 5px 12px; margin: 3px; border-radius: 5px; text-decoration: none; display: inline-block; font-size: 0.8rem; }
     .ep-link:hover { background: #66fcf1; color: #0b0c10; }
+    .btn-main { background: #66fcf1; color: #0b0c10; font-weight: bold; border-radius: 30px; padding: 12px; text-decoration: none; display: block; text-align: center; }
 </style>
 """
 
@@ -389,11 +406,12 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
 {% for m in movies %}
 <div class="col"><a href="/movie/{{m.tmdb_id}}" style="text-decoration:none;">
     <div class="movie-card h-100"><div class="card-inner">
-        <span class="badge-type">{{m.type.upper()}}</span>
+        <span class="badge-type">{{m.type}}</span>
+        <span class="badge-year">{{m.year}}</span>
         <img src="{{m.poster}}" class="poster-img">
         <div class="p-2 text-center">
             <div class="text-white small fw-bold" style="height:35px; overflow:hidden;">{{m.title}}</div>
-            <div class="text-info small mt-1">⭐ {{m.rating}} | {{m.year}}</div>
+            <div class="text-info small mt-1">⭐ {{m.rating}} | {{m.quality or 'HD'}}</div>
         </div>
     </div></div>
 </a></div>
@@ -413,7 +431,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
             <p><b>Storyline:</b><br><small>{{m.story}}</small></p>
             
             {% if m.type == 'movie' %}
-            <a href="https://t.me/{{bot_user}}?start=m_{{m.tmdb_id}}" class="btn btn-custom w-100 py-3 mt-3 shadow">🚀 DOWNLOAD MOVIE</a>
+            <a href="https://t.me/{{bot_user}}?start=m_{{m.tmdb_id}}" class="btn btn-main w-100 py-3 mt-3 shadow">🚀 DOWNLOAD MOVIE</a>
             {% else %}
             <h4 class="mt-4 text-info">Seasons & Episodes</h4>
             {% for s, eps in seasons.items() %}
@@ -427,7 +445,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
             {% endif %}
         </div>
     </div>
-    {% if m.trailer %}<div class="mt-5"><h4>Official Trailer</h4><div class="ratio ratio-16x9 border border-info rounded"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
+    {% if m.trailer %}<div class="mt-5"><h4>Official Trailer</h4><div class="ratio ratio-16x9 border border-info rounded shadow-lg"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
     <div class="text-center mt-5"><a href="/" class="btn btn-sm btn-outline-info">← Back to Home</a></div>
 </div></body></html>"""
 
@@ -454,11 +472,11 @@ EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Content</title><link rel="
 <label>Quality</label><input name="quality" class="form-control mb-2" value="{{m.quality}}">
 </div><div class="col-md-6">
 <label>Poster URL</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
-<label>Trailer (Embed)</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
+<label>Trailer (Embed Link)</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
 <label>Director</label><input name="director" class="form-control mb-2" value="{{m.director}}">
 <label>Cast</label><input name="cast" class="form-control mb-2" value="{{m.cast}}">
 </div></div><label>Storyline</label><textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea>
-<button class="btn btn-success">Update Content</button> <a href="/admin" class="btn btn-secondary">Cancel</a>
+<button class="btn btn-success">Update Details</button> <a href="/admin" class="btn btn-secondary">Cancel</a>
 </form></body></html>"""
 
 LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-dark d-flex align-items-center" style="height:100vh;">
