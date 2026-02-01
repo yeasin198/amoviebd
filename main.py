@@ -43,9 +43,10 @@ def get_config():
         conf = config_col.find_one({'type': 'core_settings'}) or {}
     except:
         conf = {}
+    # আপনার রিকোয়েস্ট অনুযায়ী SITE_NAME এবং SITE_LOGO ডিফল্ট ভ্যালু যোগ করা হয়েছে
     defaults = {
-        'SITE_NAME': 'Movie Portal', # নতুন
-        'SITE_LOGO': 'https://i.ibb.co/LzN67Z6/logo.png', # নতুন
+        'SITE_NAME': 'Movie Portal',
+        'SITE_LOGO': 'https://cdn-icons-png.flaticon.com/512/705/705062.png',
         'SITE_URL': '', 'BOT_TOKEN': '', 'TMDB_API_KEY': '', 
         'ADMIN_ID': '', 'STORAGE_CHANNEL_ID': '',
         'AUTO_DELETE_TIME': 0, 'PROTECT_CONTENT': 'off',
@@ -62,37 +63,22 @@ def get_short_link(long_url):
     if not s_url or not s_api: return long_url
     try:
         api_endpoint = f"https://{s_url}?api={s_api}&url={urllib.parse.quote(long_url)}"
-        res = requests.get(api_endpoint).json()
+        res = requests.get(api_endpoint, timeout=5).json()
         return res.get('shortenedUrl') or res.get('shortlink') or long_url
     except:
         return long_url
 
-def create_bot():
-    config = get_config()
-    token = config.get('BOT_TOKEN')
-    if token and len(token) > 20:
-        try:
-            # বট স্পিড বাড়ানোর জন্য Threaded=True এবং num_threads দেওয়া হয়েছে
-            return telebot.TeleBot(token, threaded=True, num_threads=50)
-        except:
-            return None
-    return None
-
-def auto_delete_task(bot_inst, chat_id, msg_id, delay):
-    if delay > 0:
-        time.sleep(delay)
-        try:
-            bot_inst.delete_message(chat_id, msg_id)
-        except: pass
-
-# --- [টেলিগ্রাম বট হ্যান্ডলার - আপনার অরিজিনাল কোড সম্পূর্ণ এখানে] ---
+# --- [টেলিগ্রাম বট হ্যান্ডলার] ---
 def register_handlers(bot_inst):
     if not bot_inst: return
 
     @bot_inst.message_handler(commands=['start'])
     def start(message):
-        if not users_col.find_one({'user_id': message.from_user.id}):
-            users_col.insert_one({'user_id': message.from_user.id, 'name': message.from_user.first_name})
+        # ডাটাবেস অপারেশন আলাদা থ্রেডে পাঠানো হয়েছে বট ফাস্ট করার জন্য
+        def save_user():
+            if not users_col.find_one({'user_id': message.from_user.id}):
+                users_col.insert_one({'user_id': message.from_user.id, 'name': message.from_user.first_name})
+        threading.Thread(target=save_user).start()
             
         config = get_config()
         if len(message.text.split()) > 1:
@@ -109,7 +95,7 @@ def register_handlers(bot_inst):
                 except:
                     bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি।")
                 return
-        bot_inst.reply_to(message, f"🎬 {config['SITE_NAME']} এ স্বাগতম। মুভি বা টিভি শো খুঁজতে ওয়েবসাইট ভিজিট করুন।")
+        bot_inst.reply_to(message, f"🎬 {config['SITE_NAME']} এ স্বাগতম!\nমুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।")
 
     @bot_inst.message_handler(commands=['stats'])
     def stats(message):
@@ -149,7 +135,7 @@ def register_handlers(bot_inst):
         
         tmdb_api = config.get('TMDB_API_KEY')
         url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_api}&query={query}"
-        try: res = requests.get(url).json().get('results', [])
+        try: res = requests.get(url, timeout=5).json().get('results', [])
         except: res = []
 
         if not res:
@@ -233,7 +219,7 @@ def register_handlers(bot_inst):
             sent_msg = bot_inst.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
             tmdb_api = config['TMDB_API_KEY']
             tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
-            m = requests.get(tmdb_url).json()
+            m = requests.get(tmdb_url, timeout=5).json()
             
             genres_data = m.get('genres', [])
             auto_cat = "Action"
@@ -277,6 +263,13 @@ def register_handlers(bot_inst):
         except Exception as e:
             bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
 
+def auto_delete_task(bot_inst, chat_id, msg_id, delay):
+    if delay > 0:
+        time.sleep(delay)
+        try:
+            bot_inst.delete_message(chat_id, msg_id)
+        except: pass
+
 # --- [বট ইনিট ফাংশন] ---
 def init_bot_service():
     global bot
@@ -285,7 +278,7 @@ def init_bot_service():
     site_url = config.get('SITE_URL')
     if token and len(token) > 20:
         try:
-            bot = telebot.TeleBot(token, threaded=True, num_threads=50) # স্পিড বাড়ানো হয়েছে
+            bot = telebot.TeleBot(token, threaded=True) # Threaded=True করা হয়েছে ফাস্ট করার জন্য
             register_handlers(bot)
             if site_url:
                 webhook_url = f"{site_url.rstrip('/')}/webhook"
@@ -293,7 +286,9 @@ def init_bot_service():
                 time.sleep(1)
                 bot.set_webhook(url=webhook_url)
             return bot
-        except: return None
+        except Exception as e:
+            print(f"❌ Bot Initialization Failure: {e}")
+    return None
 
 # --- [FLASK ROUTES] ---
 
@@ -305,6 +300,7 @@ def home():
     page = int(request.args.get('page', 1))
     limit = 24 
     skip = (page - 1) * limit
+    
     query_filter = {}
     if q: query_filter["title"] = {"$regex": q, "$options": "i"}
     if cat: query_filter["category"] = cat
@@ -312,13 +308,13 @@ def home():
     total = movies_col.count_documents(query_filter)
     movies = list(movies_col.find(query_filter).sort('_id', -1).skip(skip).limit(limit))
     pages = math.ceil(total / limit)
-    return render_template_string(HOME_HTML, movies=movies, config=conf, query=q, cat=cat, page=page, pages=pages, categories=CATEGORIES)
+    return render_template_string(HOME_HTML, movies=movies, query=q, cat=cat, page=page, pages=pages, categories=CATEGORIES, conf=conf)
 
 @app.route('/movie/<tmdb_id>')
 def movie_details(tmdb_id):
+    conf = get_config()
     movie = movies_col.find_one({'tmdb_id': tmdb_id})
     if not movie: return "Not Found", 404
-    config = get_config()
     bot_user = ""
     try:
         if bot: bot_user = bot.get_me().username
@@ -339,7 +335,7 @@ def movie_details(tmdb_id):
             if s_num not in seasons_data: seasons_data[s_num] = []
             seasons_data[s_num].append(e)
 
-    return render_template_string(DETAILS_HTML, m=movie, seasons=seasons_data, bot_user=bot_user, config=config)
+    return render_template_string(DETAILS_HTML, m=movie, seasons=seasons_data, bot_user=bot_user, conf=conf)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -349,19 +345,13 @@ def login():
             return redirect(url_for('admin'))
     return render_template_string(LOGIN_HTML)
 
-# --- [অ্যাডমিন প্যানেল লজিক] ---
-
 @app.route('/admin')
 def admin():
     if not session.get('logged_in'): return redirect(url_for('login'))
     q = request.args.get('q')
-    movies = list(movies_col.find({"title": {"$regex": q, "$options": "i"}} if q else {}).sort('_id', -1))
-    stats = {
-        'movies': movies_col.count_documents({}),
-        'users': users_col.count_documents({}),
-        'series': movies_col.count_documents({'type': 'tv'})
-    }
-    return render_template_string(ADMIN_HTML, config=get_config(), movies=movies, q=q, categories=CATEGORIES, stats=stats)
+    movies_list = list(movies_col.find({"title": {"$regex": q, "$options": "i"}} if q else {}).sort('_id', -1))
+    stats = {'users': users_col.count_documents({}), 'movies': movies_col.count_documents({})}
+    return render_template_string(ADMIN_HTML, config=get_config(), movies=movies_list, q=q, categories=CATEGORIES, stats=stats)
 
 @app.route('/admin/search_tmdb', methods=['POST'])
 def search_tmdb():
@@ -369,7 +359,9 @@ def search_tmdb():
     query = request.form.get('query')
     tmdb_key = get_config().get('TMDB_API_KEY')
     url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={query}"
-    try: return jsonify(requests.get(url).json().get('results', []))
+    try:
+        res = requests.get(url, timeout=5).json().get('results', [])
+        return jsonify(res)
     except: return jsonify([])
 
 @app.route('/admin/fetch_info', methods=['POST'])
@@ -380,30 +372,25 @@ def fetch_info():
     tmdb_id, media_type = None, "movie"
     imdb_match = re.search(r'tt\d+', url)
     if imdb_match:
-        res = requests.get(f"https://api.themoviedb.org/3/find/{imdb_match.group(0)}?api_key={tmdb_key}&external_source=imdb_id").json()
+        res = requests.get(f"https://api.themoviedb.org/3/find/{imdb_match.group(0)}?api_key={tmdb_key}&external_source=imdb_id", timeout=5).json()
         if res.get('movie_results'): tmdb_id, media_type = res['movie_results'][0]['id'], "movie"
         elif res.get('tv_results'): tmdb_id, media_type = res['tv_results'][0]['id'], "tv"
-    elif re.match(r'^\d+$', url):
-        tmdb_id = url; media_type = request.form.get('type', 'movie')
+    else: tmdb_id, media_type = url, request.form.get('type', 'movie')
 
-    if not tmdb_id: return jsonify({'error': 'Not Found'})
-    m = requests.get(f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={tmdb_key}&append_to_response=credits,videos").json()
-    genres_data = m.get('genres', [])
-    auto_cat = "Action"
-    if media_type == 'tv': auto_cat = "Web Series"
-    elif genres_data:
-        for g in genres_data:
-            if g['name'] in CATEGORIES: auto_cat = g['name']; break
-    
-    trailer = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
-    return jsonify({
-        'tmdb_id': str(tmdb_id), 'type': media_type, 'title': m.get('title') or m.get('name'),
-        'year': (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4],
-        'rating': str(round(m.get('vote_average', 0), 1)), 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
-        'story': m.get('overview'), 'director': next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A'),
-        'cast': ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]]),
-        'category': auto_cat, 'trailer': f"https://www.youtube.com/embed/{trailer}" if trailer else ""
-    })
+    try:
+        m = requests.get(f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={tmdb_key}&append_to_response=credits,videos", timeout=5).json()
+        genres_data = m.get('genres', [])
+        auto_cat = "Web Series" if media_type == 'tv' else (genres_data[0]['name'] if genres_data else "Action")
+        trailer = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
+        return jsonify({
+            'tmdb_id': str(tmdb_id), 'type': media_type, 'title': m.get('title') or m.get('name'),
+            'year': (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4],
+            'rating': str(round(m.get('vote_average', 0), 1)), 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
+            'story': m.get('overview'), 'director': next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A'),
+            'cast': ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]]),
+            'category': auto_cat, 'trailer': f"https://www.youtube.com/embed/{trailer}" if trailer else ""
+        })
+    except: return jsonify({'error': 'Fetch Failed'})
 
 @app.route('/admin/manual_add', methods=['POST'])
 def manual_add():
@@ -417,7 +404,7 @@ def manual_add():
         'category': request.form.get('category'), 'trailer': request.form.get('trailer')
     }
     movies_col.update_one({'tmdb_id': tid}, {'$set': movie_info}, upsert=True)
-    return redirect(url_for('edit_movie', tmdb_id=tid))
+    return redirect(url_for('admin'))
 
 @app.route('/admin/add_file', methods=['POST'])
 def add_file():
@@ -431,13 +418,18 @@ def add_file():
 def edit_movie(tmdb_id):
     if not session.get('logged_in'): return redirect(url_for('login'))
     movie = movies_col.find_one({'tmdb_id': tmdb_id})
-    return render_template_string(EDIT_HTML, m=movie, categories=CATEGORIES)
+    return render_template_string(EDIT_HTML, m=movie, categories=CATEGORIES, config=get_config())
 
 @app.route('/admin/update', methods=['POST'])
 def update_movie():
     if not session.get('logged_in'): return redirect(url_for('login'))
     tid = request.form.get('tmdb_id')
-    data = request.form.to_dict()
+    data = {
+        'title': request.form.get('title'), 'year': request.form.get('year'),
+        'rating': request.form.get('rating'), 'poster': request.form.get('poster'),
+        'category': request.form.get('category'), 'trailer': request.form.get('trailer'),
+        'director': request.form.get('director'), 'cast': request.form.get('cast'), 'story': request.form.get('story')
+    }
     movies_col.update_one({'tmdb_id': tid}, {'$set': data})
     return redirect(url_for('admin'))
 
@@ -482,216 +474,230 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates (PREMIUM UI) ==================
+# ================== HTML Templates ==================
 
-PREMIUM_STYLE = """
+COMMON_STYLE = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
-    :root { --primary: #00d2ff; --secondary: #3a7bd5; --dark: #0f172a; --card-bg: #1e293b; --text: #f1f5f9; }
-    body { background: var(--dark); color: var(--text); font-family: 'Poppins', sans-serif; margin: 0; }
+    body { background: #0b0c10; color: #c5c6c7; font-family: 'Poppins', sans-serif; overflow-x: hidden; }
     
-    /* Neon Glow Poster */
-    .neon-card { background: var(--card-bg); border: 1px solid #334155; border-radius: 12px; transition: 0.3s; overflow: hidden; position: relative; }
-    .neon-card:hover { transform: translateY(-5px); border-color: var(--primary); box-shadow: 0 0 15px rgba(0,210,255,0.3); }
+    /* Neon Look */
+    .neon-text { color: #66fcf1; text-shadow: 0 0 10px #66fcf1; }
+    .neon-card { background: #1f2833; border: 1px solid #45a29e; border-radius: 12px; transition: 0.5s; overflow: hidden; position: relative; }
+    .neon-card:hover { transform: translateY(-8px); box-shadow: 0 0 20px #66fcf1; border-color: #66fcf1; }
     
-    .btn-neon { background: linear-gradient(45deg, var(--primary), var(--secondary)); color: white; border: none; border-radius: 8px; padding: 10px 20px; font-weight: 600; text-decoration: none; display: inline-block; transition: 0.3s; }
-    .btn-neon:hover { box-shadow: 0 0 20px var(--primary); }
+    .navbar { background: #1f2833; border-bottom: 2px solid #66fcf1; }
+    .site-logo { width: 35px; height: 35px; border-radius: 50%; margin-right: 10px; border: 1px solid #66fcf1; }
+    .poster-img { height: 260px; width: 100%; object-fit: cover; }
     
-    .cat-pill { padding: 6px 15px; border-radius: 20px; border: 1px solid var(--primary); color: var(--primary); text-decoration: none; margin: 3px; display: inline-block; font-size: 13px; transition: 0.3s; }
-    .cat-pill.active, .cat-pill:hover { background: var(--primary); color: #000; font-weight: 600; }
+    .cat-pill { padding: 6px 16px; border-radius: 20px; border: 1px solid #66fcf1; color: #66fcf1; text-decoration: none; margin: 4px; display: inline-block; font-size: 13px; transition: 0.3s; }
+    .cat-pill.active, .cat-pill:hover { background: #66fcf1; color: #0b0c10; font-weight: bold; }
     
-    /* Premium Sidebar Admin */
-    .sidebar { width: 260px; height: 100vh; position: fixed; background: #020617; border-right: 1px solid #1e293b; padding: 25px; transition: 0.3s; z-index: 1000; }
-    .main-content { margin-left: 260px; padding: 40px; min-height: 100vh; }
-    .nav-link { color: #94a3b8; padding: 12px 15px; border-radius: 10px; margin-bottom: 8px; display: block; text-decoration: none; transition: 0.3s; font-weight: 500; }
-    .nav-link:hover, .nav-link.active { background: rgba(0,210,255,0.1); color: var(--primary); }
-    
-    .stat-box { background: var(--card-bg); padding: 25px; border-radius: 15px; border: 1px solid #334155; text-align: center; }
+    /* Admin UI */
+    .admin-container { background: #fff; color: #333; border-radius: 15px; padding: 25px; margin-top: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+    .nav-tabs .nav-link { color: #45a29e; font-weight: 600; }
+    .nav-tabs .nav-link.active { color: #1f2833; border-bottom: 3px solid #45a29e; }
+    .search-results-box { position: absolute; background: white; width: 100%; z-index: 1000; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; }
+    .search-item { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; }
+    .search-item:hover { background: #f8f9fa; }
 </style>
 """
 
-HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>{{{{config.SITE_NAME}}}}</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{PREMIUM_STYLE}</head><body>" + """
-<nav class="navbar navbar-dark sticky-top border-bottom border-secondary" style="background: rgba(15,23,42,0.9); backdrop-filter: blur(10px);">
-    <div class="container">
-        <a class="navbar-brand fw-bold d-flex align-items-center" href="/">
-            <img src="{{config.SITE_LOGO}}" height="35" class="me-2 rounded-circle"> {{config.SITE_NAME}}
-        </a>
-        <form class="d-flex" action="/" method="GET">
-            <input class="form-control me-2 bg-dark text-white border-secondary" type="search" name="search" placeholder="Search..." value="{{query or ''}}">
-            <button class="btn btn-primary" type="submit">🔍</button>
-        </form>
-    </div>
-</nav>
-<div class="container my-4 text-center">
+HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>{{{{conf.SITE_NAME}}}}</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + """
+<nav class="navbar navbar-dark sticky-top mb-4"><div class="container">
+    <a class="navbar-brand fw-bold neon-text d-flex align-items-center" href="/">
+        <img src="{{conf.SITE_LOGO}}" class="site-logo"> {{conf.SITE_NAME}}
+    </a>
+    <form class="d-flex" action="/" method="GET">
+        <input class="form-control me-2 bg-dark text-white border-info" type="search" name="search" placeholder="Search..." value="{{query or ''}}">
+        <button class="btn btn-outline-info" type="submit">🔍</button>
+    </form>
+</div></nav>
+<div class="container mb-4 text-center">
     <a href="/" class="cat-pill {% if not cat %}active{% endif %}">All</a>
-    {% for c in categories %}<a href="/?cat={{c}}" class="cat-pill {% if cat == c %}active{% endif %}">{{c}}</a>{% endfor %}
+    {% for c in categories %}
+    <a href="/?cat={{c}}" class="cat-pill {% if cat == c %}active{% endif %}">{{c}}</a>
+    {% endfor %}
 </div>
 <div class="container"><div class="row row-cols-2 row-cols-md-4 row-cols-lg-6 g-3">
 {% for m in movies %}
 <div class="col"><a href="/movie/{{m.tmdb_id}}" style="text-decoration:none; color:inherit;">
     <div class="neon-card">
-        <img src="{{m.poster}}" class="w-100" style="height:250px; object-fit:cover;">
-        <div class="p-2 text-center text-truncate small fw-bold">{{m.title}}</div>
+        <img src="{{m.poster}}" class="poster-img" loading="lazy">
+        <div class="p-2 text-center">
+            <div class="small fw-bold text-truncate">{{m.title}}</div>
+            <div class="text-info small">⭐ {{m.rating}} | {{m.year}}</div>
+        </div>
     </div>
 </a></div>
 {% endfor %}
 </div></div></body></html>"""
 
-DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>{{{{m.title}}}}</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{PREMIUM_STYLE}</head><body>" + """
-<div class="container py-5">
+DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>{{{{m.title}}}}</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + """
+<nav class="navbar navbar-dark mb-4"><div class="container">
+    <a class="navbar-brand fw-bold neon-text d-flex align-items-center" href="/"><img src="{{conf.SITE_LOGO}}" class="site-logo">{{conf.SITE_NAME}}</a>
+</div></nav>
+<div class="container py-4">
     <div class="row">
-        <div class="col-md-4 mb-4"><img src="{{m.poster}}" class="w-100 rounded shadow-lg border border-secondary"></div>
+        <div class="col-md-4 mb-4"><img src="{{m.poster}}" class="w-100 rounded border border-info shadow-lg"></div>
         <div class="col-md-8">
-            <h1 class="text-white fw-bold">{{m.title}} ({{m.year}})</h1>
+            <h1 class="neon-text">{{m.title}} ({{m.year}})</h1>
             <p class="text-info fw-bold">⭐ Rating: {{m.rating}} | 📂 Category: {{m.category}}</p>
-            <p>{{m.story}}</p>
+            <p><b>Story:</b><br>{{m.story}}</p>
             <hr class="border-secondary">
-            <div class="mt-4">
-                {% if m.type == 'movie' %}
-                    {% for f in m.files %}<a href="{{f.short_url}}" class="btn-neon me-2 mb-2">🚀 Download {{f.quality}}</a>{% endfor %}
-                {% else %}
-                    {% for s, eps in seasons.items() %}
-                    <div class="p-3 border border-secondary rounded mb-3">
-                        <h6 class="text-info">Season {{s}}</h6>
-                        {% for ep in eps %}
-                        <div class="mb-2">Ep {{ep.episode}}: {% for f in ep.files %}<a href="{{f.short_url}}" class="btn btn-sm btn-outline-info ms-1">{{f.quality}}</a>{% endfor %}</div>
-                        {% endfor %}
-                    </div>
+            {% if m.type == 'movie' %}
+                {% for f in m.files %}<a href="{{f.short_url}}" class="btn btn-info me-2 mb-2">Download {{f.quality}}</a>{% endfor %}
+            {% else %}
+                {% for s, eps in seasons.items() %}
+                <div class="p-3 border border-info rounded mb-3">
+                    <h6 class="text-info">Season {{s}}</h6>
+                    {% for ep in eps %}
+                    <div class="mb-1">Ep {{ep.episode}}: {% for f in ep.files %}<a href="{{f.short_url}}" class="btn btn-sm btn-outline-info ms-1">{{f.quality}}</a>{% endfor %}</div>
                     {% endfor %}
-                {% endif %}
-            </div>
-            {% if m.trailer %}<div class="mt-5"><h4>Trailer</h4><div class="ratio ratio-16x9 rounded border border-info shadow-lg"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
+                </div>
+                {% endfor %}
+            {% endif %}
         </div>
     </div>
 </div></body></html>"""
 
-ADMIN_HTML = f"<!DOCTYPE html><html><head><title>Admin Dashboard</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'><script src='https://code.jquery.com/jquery-3.6.0.min.js'></script>{PREMIUM_STYLE}</head><body>" + """
-<div class="sidebar">
-    <h4 class="text-white fw-bold mb-4">⚙️ PORTAL ADMIN</h4>
-    <a href="#" class="nav-link active" onclick="showTab('dash')">📊 Dashboard</a>
-    <a href="#" class="nav-link" onclick="showTab('add-movie')">➕ Add Movie/Series</a>
-    <a href="#" class="nav-link" onclick="showTab('list')">🎬 Manage Content</a>
-    <a href="#" class="nav-link" onclick="showTab('settings')">🔧 Site Settings</a>
-    <a href="#" class="nav-link" onclick="showTab('bot')">🤖 Bot Config</a>
-    <hr class="border-secondary">
-    <a href="/" class="nav-link text-info">🌐 View Site</a>
-</div>
-
-<div class="main-content">
-    <div id="tab-dash" class="tab-content">
-        <h2>Dashboard</h2>
-        <div class="row g-4 mt-4">
-            <div class="col-md-4"><div class="stat-box"><h3>{{stats.users}}</h3><p>Total Users</p></div></div>
-            <div class="col-md-4"><div class="stat-box"><h3>{{stats.movies}}</h3><p>Total Content</p></div></div>
-            <div class="col-md-4"><div class="stat-box"><h3>{{stats.series}}</h3><p>TV Series</p></div></div>
-        </div>
+ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Dashboard</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"><script src="https://code.jquery.com/jquery-3.6.0.min.js"></script><script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>""" + COMMON_STYLE + """</head><body class="bg-dark">
+<div class="container admin-container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="fw-bold">⚙️ Admin Dashboard</h2>
+        <a href="/" class="btn btn-outline-dark">Visit Site</a>
     </div>
 
-    <div id="tab-add-movie" class="tab-content" style="display:none;">
-        <div class="bg-dark p-4 rounded border border-secondary">
-            <h5>🔍 Auto Search TMDB</h5>
-            <div class="input-group mb-3"><input id="tmdb_in" class="form-control bg-dark text-white" placeholder="Name..."><button class="btn btn-primary" onclick="searchTMDB()">Search</button></div>
-            <div id="res_box" class="list-group mb-4"></div>
-            <hr class="border-secondary">
-            <form action="/admin/manual_add" method="POST">
-                <input id="f_title" name="title" class="form-control mb-2 bg-dark text-white border-secondary" placeholder="Title">
-                <input id="f_id" name="tmdb_id" class="form-control mb-2 bg-dark text-white border-secondary" placeholder="TMDB ID">
-                <select id="f_type" name="type" class="form-control mb-2 bg-dark text-white border-secondary"><option value="movie">Movie</option><option value="tv">TV</option></select>
-                <select name="category" class="form-control mb-2 bg-dark text-white border-secondary">{% for c in categories %}<option value="{{c}}">{{c}}</option>{% endfor %}</select>
-                <input id="f_year" name="year" class="form-control mb-2 bg-dark text-white border-secondary" placeholder="Year">
-                <input id="f_poster" name="poster" class="form-control mb-2 bg-dark text-white border-secondary" placeholder="Poster URL">
-                <textarea id="f_story" name="story" class="form-control mb-3 bg-dark text-white border-secondary" placeholder="Story"></textarea>
-                <button class="btn btn-success w-100 py-2">Save Metadata</button>
+    <ul class="nav nav-tabs mb-4" id="adminTab" role="tablist">
+        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-stats">📊 Stats</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-add">➕ Add Content</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-manage">📂 Manage Movies</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config">🛠️ Settings</button></li>
+    </ul>
+
+    <div class="tab-content">
+        <div class="tab-pane fade show active" id="tab-stats">
+            <div class="row text-center">
+                <div class="col-md-6"><div class="card p-4 mb-3 bg-light"><h3>{{stats.users}}</h3><p>Total Users</p></div></div>
+                <div class="col-md-6"><div class="card p-4 mb-3 bg-light"><h3>{{stats.movies}}</h3><p>Total Movies</p></div></div>
+            </div>
+        </div>
+
+        <div class="tab-pane fade" id="tab-add">
+            <div class="row">
+                <div class="col-md-6">
+                    <h5>🔍 TMDb Search</h5>
+                    <div class="position-relative">
+                        <input id="tmdb_in" class="form-control mb-2" placeholder="Search Movie Name..." onkeyup="searchTMDB()">
+                        <div id="tmdb_results" class="search-results-box" style="display:none;"></div>
+                    </div>
+                    <hr>
+                    <h5>🔗 Fetch by ID</h5>
+                    <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="ID/Link"><button class="btn btn-primary" onclick="fetchData()">Fetch</button></div>
+                </div>
+                <div class="col-md-6">
+                    <form action="/admin/manual_add" method="POST">
+                        <input id="f_title" name="title" class="form-control mb-2" placeholder="Title" required>
+                        <input id="f_id" name="tmdb_id" class="form-control mb-2" placeholder="ID" required>
+                        <select id="f_type" name="type" class="form-control mb-2"><option value="movie">Movie</option><option value="tv">TV</option></select>
+                        <select id="f_cat" name="category" class="form-control mb-2">{% for c in categories %}<option value="{{c}}">{{c}}</option>{% endfor %}</select>
+                        <input id="f_year" name="year" class="form-control mb-2" placeholder="Year">
+                        <input id="f_rating" name="rating" class="form-control mb-2" placeholder="Rating">
+                        <input id="f_poster" name="poster" class="form-control mb-2" placeholder="Poster URL">
+                        <textarea id="f_story" name="story" class="form-control mb-2" placeholder="Story"></textarea>
+                        <button class="btn btn-success w-100">Save Metadata</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane fade" id="tab-manage">
+            <form class="d-flex mb-3"><input name="q" class="form-control me-2" placeholder="Search saved movies..." value="{{q or ''}}"><button class="btn btn-dark">Search</button></form>
+            <div style="max-height: 400px; overflow-y: auto;">
+                <table class="table table-sm">
+                    <thead><tr><th>Title</th><th>Action</th></tr></thead>
+                    <tbody>{% for m in movies %}<tr><td>{{m.title}}</td><td><a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit</a> <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger">Del</a></td></tr>{% endfor %}</tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="tab-pane fade" id="tab-config">
+            <form action="/save_config" method="POST">
+                <div class="row">
+                    <div class="col-md-6"><label>Site Name</label><input name="site_name" class="form-control mb-2" value="{{config.SITE_NAME}}"></div>
+                    <div class="col-md-6"><label>Site Logo URL</label><input name="site_logo" class="form-control mb-2" value="{{config.SITE_LOGO}}"></div>
+                    <div class="col-md-6"><label>Site URL</label><input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}"></div>
+                    <div class="col-md-6"><label>Bot Token</label><input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}"></div>
+                    <div class="col-md-6"><label>TMDB Key</label><input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}"></div>
+                    <div class="col-md-6"><label>Admin ID</label><input name="admin_id" class="form-control mb-2" value="{{config.ADMIN_ID}}"></div>
+                    <div class="col-md-12 mt-3"><button class="btn btn-dark w-100">Save All Settings</button></div>
+                </div>
             </form>
         </div>
     </div>
-
-    <div id="tab-list" class="tab-content" style="display:none;">
-        <form class="d-flex mb-3"><input name="q" class="form-control me-2" placeholder="Search..." value="{{q or ''}}"><button class="btn btn-info">Search</button></form>
-        <table class="table table-dark table-hover">
-            <thead><tr><th>Title</th><th>Category</th><th>Action</th></tr></thead>
-            {% for m in movies %}
-            <tr><td>{{m.title}}</td><td>{{m.category}}</td><td><a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit/Link</a> <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger">Del</a></td></tr>
-            {% endfor %}
-        </table>
-    </div>
-
-    <div id="tab-settings" class="tab-content" style="display:none;">
-        <form action="/save_config" method="POST" class="bg-dark p-4 rounded border border-secondary">
-            <h5 class="mb-4">🌍 Site Identity</h5>
-            <label>Site Name</label><input name="site_name" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.SITE_NAME}}">
-            <label>Site Logo URL</label><input name="site_logo" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.SITE_LOGO}}">
-            <label>Site URL</label><input name="site_url" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.SITE_URL}}">
-            <button class="btn btn-primary px-5">Save branding</button>
-        </form>
-    </div>
-
-    <div id="tab-bot" class="tab-content" style="display:none;">
-        <form action="/save_config" method="POST" class="bg-dark p-4 rounded border border-secondary">
-            <h5 class="mb-4">🤖 Bot & Core Config</h5>
-            <div class="row">
-                <div class="col-md-12"><label>Telegram Bot Token</label><input name="token" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.BOT_TOKEN}}"></div>
-                <div class="col-md-6"><label>TMDB API Key</label><input name="tmdb" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.TMDB_API_KEY}}"></div>
-                <div class="col-md-6"><label>Admin Telegram ID</label><input name="admin_id" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.ADMIN_ID}}"></div>
-                <div class="col-md-6"><label>Storage Channel ID</label><input name="channel_id" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.STORAGE_CHANNEL_ID}}"></div>
-                <div class="col-md-6"><label>Shortener URL</label><input name="s_url" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.SHORTENER_URL}}"></div>
-                <div class="col-md-6"><label>Shortener API Key</label><input name="s_api" class="form-control mb-3 bg-dark text-white border-secondary" value="{{config.SHORTENER_API}}"></div>
-                <div class="col-md-6"><label>Auto Delete Time (Sec)</label><input name="delete_time" type="number" class="form-control bg-dark text-white border-secondary" value="{{config.AUTO_DELETE_TIME}}"></div>
-            </div>
-            <button class="btn btn-primary w-100 mt-4 py-2">Save bot settings</button>
-        </form>
-    </div>
 </div>
-
 <script>
-function showTab(id) {
-    $('.tab-content').hide(); $('.nav-link').removeClass('active');
-    $('#tab-'+id).show(); $(event.target).addClass('active');
-}
 function searchTMDB() {
     let q = $('#tmdb_in').val();
-    $.post('/admin/search_tmdb', {query: q}, function(data) {
+    if(q.length < 3) return;
+    $.post('/admin/search_tmdb', {query: q}, function(res) {
         let h = '';
-        data.forEach(i => { h += `<a href="#" class="list-group-item list-group-item-action bg-dark text-white" onclick="fetchData('${i.id}', '${i.media_type}')">${i.title || i.name} (${i.media_type})</a>`; });
-        $('#res_box').html(h);
+        res.forEach(i => {
+            if(i.media_type != 'person') {
+                h += `<div class="search-item" onclick="selectTMDB('${i.media_type}','${i.id}')">${i.title || i.name} (${(i.release_date || i.first_air_date || '').substring(0,4)})</div>`;
+            }
+        });
+        $('#tmdb_results').html(h).show();
     });
 }
-function fetchData(id, type) {
-    $.post('/admin/fetch_info', {url: id, type: type}, function(d) {
-        $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_type').val(d.type);
-        $('#f_year').val(d.year); $('#f_poster').val(d.poster); $('#f_story').val(d.story);
-        $('#res_box').html('');
+function selectTMDB(type, id) {
+    $('#f_type').val(type); $('#url_in').val(id); $('#tmdb_results').hide(); fetchData();
+}
+function fetchData() {
+    let u = $('#url_in').val(), t = $('#f_type').val();
+    $.post('/admin/fetch_info', {url: u, type: t}, function(d) {
+        if(d.error) return alert(d.error);
+        $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year);
+        $('#f_rating').val(d.rating); $('#f_poster').val(d.poster); $('#f_story').val(d.story);
+        $('#f_cat').val(d.category);
     });
 }
 </script>
 </body></html>"""
 
-LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">{PREMIUM_STYLE}</head><body class="bg-dark d-flex align-items-center justify-content-center" style="height:100vh;">
-<form method="POST" class="bg-dark p-4 rounded border border-secondary" style="width:340px;">
-    <h4 class="text-center text-info mb-4">ADMIN LOGIN</h4>
-    <input name="u" class="form-control mb-2 bg-secondary text-white" placeholder="User"><input name="p" type="password" class="form-control mb-3 bg-secondary text-white" placeholder="Pass"><button class="btn btn-primary w-100">Login</button>
-</form></body></html>"""
-
-EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Content</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">{PREMIUM_STYLE}</head><body class="main-content">
-<div class="bg-dark p-4 border border-secondary rounded">
-    <h3>Edit: {{m.title}}</h3>
-    <form action="/admin/add_file" method="POST" class="mt-4">
-        <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
-        <div class="row">
-            <div class="col-md-5"><input name="quality" class="form-control bg-dark text-white" placeholder="720p Dual Audio"></div>
-            <div class="col-md-5"><input name="file_id" class="form-control bg-dark text-white" placeholder="Telegram Msg ID"></div>
-            <div class="col-md-2"><button class="btn btn-primary w-100">Add Link</button></div>
-        </div>
-    </form>
-    <div class="mt-4"><h6>Current Links:</h6>
-    <ul class="list-group">{% for f in m.files %}<li class="list-group-item bg-dark text-white border-secondary d-flex justify-content-between">{{f.quality}} <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">Del</a></li>{% endfor %}</ul>
-    </div>
-    <a href="/admin" class="btn btn-secondary mt-4">Back to Panel</a>
+EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Content</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-light container py-5">
+<div class="row">
+    <div class="col-md-6"><div class="card p-4 shadow mb-4">
+        <h5>✏️ Edit: {{m.title}}</h5>
+        <form action="/admin/update" method="POST">
+            <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
+            <input name="title" class="form-control mb-2" value="{{m.title}}">
+            <select name="category" class="form-control mb-2">{% for c in categories %}<option value="{{c}}" {% if m.category==c %}selected{% endif %}>{{c}}</option>{% endfor %}</select>
+            <input name="year" class="form-control mb-2" value="{{m.year}}">
+            <input name="rating" class="form-control mb-2" value="{{m.rating}}">
+            <input name="poster" class="form-control mb-2" value="{{m.poster}}">
+            <textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea>
+            <button class="btn btn-success w-100">Update Metadata</button>
+        </form>
+    </div></div>
+    <div class="col-md-6"><div class="card p-4 shadow">
+        <h5>🔗 Add Links</h5>
+        <form action="/admin/add_file" method="POST" class="mb-4">
+            <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
+            <input name="quality" class="form-control mb-2" placeholder="720p Dual" required>
+            <input name="file_id" class="form-control mb-2" placeholder="Message ID" required>
+            <button class="btn btn-info w-100">Add Link</button>
+        </form>
+        <ul class="list-group">{% for f in m.files %}<li class="list-group-item d-flex justify-content-between">{{f.quality}} <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="text-danger">Del</a></li>{% endfor %}</ul>
+    </div><a href="/admin" class="btn btn-secondary mt-3">Back</a></div>
 </div></body></html>"""
 
-# ================== রান করার অংশ ==================
+LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-dark d-flex align-items-center" style="height:100vh;">
+<div class="card p-4 mx-auto shadow" style="width:340px;">
+    <h4 class="text-center">ADMIN LOGIN</h4><hr>
+    <form method="POST"><input name="u" class="form-control mb-2" placeholder="User"><input name="p" type="password" class="form-control mb-3" placeholder="Pass"><button class="btn btn-primary w-100">Login</button></form>
+</div></body></html>"""
 
 if __name__ == '__main__':
     threading.Thread(target=init_bot_service, daemon=True).start()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
