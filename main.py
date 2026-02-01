@@ -11,19 +11,6 @@ from pymongo import MongoClient
 from bson import ObjectId
 from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
 
-import telebot
-import requests
-import os
-import time
-import threading
-import urllib.parse
-import re
-import math
-from telebot import types
-from pymongo import MongoClient
-from bson import ObjectId
-from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
-
 # ================== ডাটাবেস সেটআপ ==================
 MONGO_URI = os.environ.get('MONGO_URI', "YOUR_MONGODB_URI_HERE") 
 
@@ -114,7 +101,6 @@ def register_handlers(bot_inst):
                 return
         bot_inst.reply_to(message, f"🎬 {config.get('SITE_NAME')} এ স্বাগতম! মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।")
 
-    # /cancel কমান্ড লজিক
     @bot_inst.message_handler(commands=['cancel'])
     def cancel_process(message):
         uid = message.from_user.id
@@ -181,16 +167,20 @@ def register_handlers(bot_inst):
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
     def handle_selection(call):
         _, m_type, m_id = call.data.split('_')
-        admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id}
+        # নতুন স্টেট: একাধিক ফাইল রাখার জন্য 'all_files' লিস্ট যোগ করা হয়েছে
+        admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id, 'all_files': []}
         
         if m_type == 'movie':
-            markup = types.InlineKeyboardMarkup()
-            for l in ["Bangla", "Hindi", "English", "Multi"]:
-                markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{m_id}_{l}"))
-            bot_inst.edit_message_text("🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+            ask_movie_lang(call.message, m_id)
         else:
             msg = bot_inst.send_message(call.message.chat.id, "📺 সিজন নম্বর লিখুন (বা /cancel):")
             bot_inst.register_next_step_handler(msg, get_season)
+
+    def ask_movie_lang(message, mid):
+        markup = types.InlineKeyboardMarkup()
+        for l in ["Bangla", "Hindi", "English", "Multi"]:
+            markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{mid}_{l}"))
+        bot_inst.send_message(message.chat.id, "🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", reply_markup=markup)
 
     def get_season(message):
         if message.text == '/cancel': return cancel_process(message)
@@ -225,14 +215,16 @@ def register_handlers(bot_inst):
 
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('qual_m_'))
     def movie_file_ask(call):
+        uid = call.from_user.id
         _, _, mid, lang, qual = call.data.split('_')
-        if qual == "Custom":
-            admin_states[call.from_user.id].update({'lang': lang})
-            msg = bot_inst.send_message(call.message.chat.id, "🖊️ কাস্টম কোয়ালিটি লিখুন (বা /cancel):")
-            bot_inst.register_next_step_handler(msg, get_custom_qual)
-        else:
-            admin_states[call.from_user.id].update({'lang': lang, 'qual': qual})
-            bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান (বা /cancel):")
+        if uid in admin_states:
+            if qual == "Custom":
+                admin_states[uid].update({'lang': lang})
+                msg = bot_inst.send_message(call.message.chat.id, "🖊️ কাস্টম কোয়ালিটি লিখুন (বা /cancel):")
+                bot_inst.register_next_step_handler(msg, get_custom_qual)
+            else:
+                admin_states[uid].update({'lang': lang, 'qual': qual})
+                bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান (বা /cancel):")
 
     def get_custom_qual(message):
         if message.text == '/cancel': return cancel_process(message)
@@ -248,7 +240,49 @@ def register_handlers(bot_inst):
         if uid not in admin_states: return
         state = admin_states[uid]
         try:
+            # ফাইল স্টোরেজ চ্যানেলে কপি করা
             sent_msg = bot_inst.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
+            
+            # ফাইলের ডিটেইলস সাময়িকভাবে লিস্টে জমা রাখা
+            file_label = f"{state.get('lang', '')} {state.get('qual', 'HD')}".strip()
+            file_data = {'quality': file_label, 'file_id': sent_msg.message_id}
+            admin_states[uid]['all_files'].append(file_data)
+
+            # বাটন দেখানো যাতে আরো ফাইল যোগ বা ফিনিশ করা যায়
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("➕ Add More Quality", callback_data="add_more_file"))
+            markup.add(types.InlineKeyboardButton("✅ Finish Upload", callback_data="finish_upload"))
+            
+            bot_inst.reply_to(message, f"📥 ফাইল গ্রহণ করা হয়েছে: {file_label}\nএখন কি করতে চান?", reply_markup=markup)
+            
+        except Exception as e:
+            bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
+
+    @bot_inst.callback_query_handler(func=lambda call: call.data == "add_more_file")
+    def add_more_file(call):
+        uid = call.from_user.id
+        if uid in admin_states:
+            state = admin_states[uid]
+            if state['type'] == 'movie':
+                ask_movie_lang(call.message, state['tmdb_id'])
+            else:
+                msg = bot_inst.send_message(call.message.chat.id, "📥 পরবর্তী কোয়ালিটি লিখুন (বা /cancel):")
+                bot_inst.register_next_step_handler(msg, get_tv_quality)
+
+    @bot_inst.callback_query_handler(func=lambda call: call.data == "finish_upload")
+    def handle_finish(call):
+        uid = call.from_user.id
+        if uid not in admin_states: return
+        config = get_config()
+        state = admin_states[uid]
+        
+        if not state['all_files']:
+            bot_inst.answer_callback_query(call.id, "⚠️ কোনো ফাইল পাঠানো হয়নি!")
+            return
+
+        bot_inst.edit_message_text("⌛ ডাটাবেসে সেভ হচ্ছে, দয়া করে অপেক্ষা করুন...", call.message.chat.id, call.message.message_id)
+        
+        try:
             tmdb_api = config['TMDB_API_KEY']
             tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
             m = requests.get(tmdb_url).json()
@@ -272,26 +306,27 @@ def register_handlers(bot_inst):
                 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
                 'rating': str(round(m.get('vote_average', 0), 1)), 'story': m.get('overview', 'N/A'),
                 'cast': cast, 'director': director, 'category': auto_cat,
-                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else "",
-                'lang': state.get('lang', 'N/A'), 'quality': state.get('qual', 'HD')
+                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else ""
             }
+            
+            # ডাটাবেসে মুভির তথ্য আপডেট বা ইনসার্ট করা
             movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
 
-            file_label = f"{state.get('lang', '')} {state['qual']}".strip()
-            file_data = {'quality': file_label, 'file_id': sent_msg.message_id}
-
+            # সব ফাইল একসাথে ডাটাবেসে পুশ করা
             if state['type'] == 'movie':
-                movies_col.update_one({'tmdb_id': state['tmdb_id']}, {'$push': {'files': file_data}})
+                movies_col.update_one({'tmdb_id': state['tmdb_id']}, {'$push': {'files': {'$each': state['all_files']}}})
             else:
                 episodes_col.update_one(
                     {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
                     {'$set': {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
-                     '$push': {'files': file_data}}, upsert=True
+                     '$push': {'files': {'$each': state['all_files']}}}, upsert=True
                 )
-            bot_inst.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}\n📂 ক্যাটাগরি: {auto_cat}")
+            
+            bot_inst.send_message(call.message.chat.id, f"✅ সফলভাবে পাবলিশ হয়েছে: {title}\n📂 মোট ফাইল অ্যাড হয়েছে: {len(state['all_files'])}\n📂 ক্যাটাগরি: {auto_cat}")
             del admin_states[uid]
+            
         except Exception as e:
-            bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
+            bot_inst.send_message(call.message.chat.id, f"❌ এরর: {e}")
 
 # --- [বট ইনিট ফাংশন] ---
 def init_bot_service():
@@ -369,7 +404,6 @@ def login():
             return redirect(url_for('admin'))
     return render_template_string(LOGIN_HTML)
 
-# Logout বাগ ফিক্স করা হয়েছে
 @app.route('/logout')
 def logout():
     session.clear()
