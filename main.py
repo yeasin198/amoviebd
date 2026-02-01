@@ -84,7 +84,7 @@ def auto_delete_task(bot_inst, chat_id, msg_id, delay):
             bot_inst.delete_message(chat_id, msg_id)
         except: pass
 
-# --- [টেলিগ্রাম বট হ্যান্ডলার - আপনার দেওয়া হুবহু লজিক] ---
+# --- [টেলিগ্রাম বট হ্যান্ডলার] ---
 def register_handlers(bot_inst):
     if not bot_inst: return
 
@@ -109,6 +109,16 @@ def register_handlers(bot_inst):
                     bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি।")
                 return
         bot_inst.reply_to(message, f"🎬 {config.get('SITE_NAME')} এ স্বাগতম! মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।")
+
+    @bot_inst.message_handler(commands=['cancel'])
+    def cancel_action(message):
+        uid = message.from_user.id
+        if uid in admin_states:
+            del admin_states[uid]
+            bot_inst.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+            bot_inst.reply_to(message, "❌ বর্তমান প্রসেসটি বাতিল করা হয়েছে। নতুন করে শুরু করতে /post ব্যবহার করুন।")
+        else:
+            bot_inst.reply_to(message, "ℹ️ বর্তমানে কোনো প্রসেস রানিং নেই।")
 
     @bot_inst.message_handler(commands=['stats'])
     def stats(message):
@@ -143,7 +153,7 @@ def register_handlers(bot_inst):
             return
         query = message.text.replace('/post', '').strip()
         if not query:
-            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন।")
+            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। (উদা: /post Leo)")
             return
         
         tmdb_api = config.get('TMDB_API_KEY')
@@ -161,7 +171,7 @@ def register_handlers(bot_inst):
             name = m.get('title') or m.get('name')
             year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
             markup.add(types.InlineKeyboardButton(text=f"[{m['media_type'].upper()}] {name} ({year})", callback_data=f"sel_{m['media_type']}_{m['id']}"))
-        bot_inst.send_message(message.chat.id, "🔍 কি আপলোড করতে চান সিলেক্ট করুন:", reply_markup=markup)
+        bot_inst.send_message(message.chat.id, "🔍 কি আপলোড করতে চান সিলেক্ট করুন: (বাতিল করতে /cancel লিখুন)", reply_markup=markup)
 
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
     def handle_selection(call):
@@ -179,6 +189,7 @@ def register_handlers(bot_inst):
 
     def get_season(message):
         uid = message.from_user.id
+        if message.text == '/cancel': return cancel_action(message)
         if uid in admin_states:
             admin_states[uid]['season'] = message.text
             bot_inst.send_message(message.chat.id, "🔢 এপিসোড নম্বর লিখুন:")
@@ -186,6 +197,7 @@ def register_handlers(bot_inst):
 
     def get_episode(message):
         uid = message.from_user.id
+        if message.text == '/cancel': return cancel_action(message)
         if uid in admin_states:
             admin_states[uid]['episode'] = message.text
             bot_inst.send_message(message.chat.id, "📥 কোয়ালিটি লিখুন (যেমন: 720p):")
@@ -193,6 +205,7 @@ def register_handlers(bot_inst):
 
     def get_tv_quality(message):
         uid = message.from_user.id
+        if message.text == '/cancel': return cancel_action(message)
         if uid in admin_states:
             admin_states[uid]['qual'] = message.text
             bot_inst.send_message(message.chat.id, "📥 ভিডিও ফাইলটি পাঠান:")
@@ -214,10 +227,11 @@ def register_handlers(bot_inst):
             bot_inst.register_next_step_handler(msg, get_custom_qual)
         else:
             admin_states[call.from_user.id].update({'lang': lang, 'qual': qual})
-            bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান:")
+            bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান: (বা /cancel)")
 
     def get_custom_qual(message):
         uid = message.from_user.id
+        if message.text == '/cancel': return cancel_action(message)
         if uid in admin_states:
             admin_states[uid]['qual'] = message.text
             bot_inst.send_message(message.chat.id, "📥 মুভি ফাইলটি এখানে পাঠান:")
@@ -289,7 +303,6 @@ def init_bot_service():
                 bot.remove_webhook()
                 time.sleep(1)
                 bot.set_webhook(url=webhook_url)
-                print(f"✅ Webhook Active: {webhook_url}")
             return bot
         except Exception as e:
             print(f"❌ Bot Initialization Failure: {e}")
@@ -350,6 +363,11 @@ def login():
             return redirect(url_for('admin'))
     return render_template_string(LOGIN_HTML)
 
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
 @app.route('/admin')
 def admin():
     if not session.get('logged_in'): return redirect(url_for('login'))
@@ -364,11 +382,8 @@ def admin():
         return render_template_string(ADMIN_ADD_HTML, config=config, categories=CATEGORIES)
     elif tab == 'settings':
         return render_template_string(ADMIN_SETTINGS_HTML, config=config)
-    else: # dashboard
-        stats = {
-            'users': users_col.count_documents({}),
-            'movies': movies_col.count_documents({})
-        }
+    else: 
+        stats = {'users': users_col.count_documents({}), 'movies': movies_col.count_documents({})}
         return render_template_string(ADMIN_DASHBOARD_HTML, stats=stats, config=config)
 
 @app.route('/admin/search_tmdb', methods=['POST'])
@@ -520,23 +535,16 @@ COMMON_STYLE = """
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
     :root { --neon: #66fcf1; --dark: #0b0c10; --card: #1f2833; --text: #c5c6c7; }
     body { background: var(--dark); color: var(--text); font-family: 'Poppins', sans-serif; overflow-x: hidden; }
-    
-    /* Frontend Cards */
     .neon-card { background: var(--card); border: 1px solid #45a29e; border-radius: 12px; transition: 0.5s; overflow: hidden; position: relative; }
     .neon-card:hover { transform: translateY(-8px); box-shadow: 0 0 20px var(--neon); border-color: var(--neon); }
-    .btn-neon { background: var(--neon); color: var(--dark); font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.3s; display: inline-block; }
+    .btn-neon { background: var(--neon); color: var(--dark); font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.3s; display: inline-block; cursor:pointer;}
     .btn-neon:hover { background: #45a29e; color: #fff; box-shadow: 0 0 15px var(--neon); }
-    
     .cat-pill { padding: 6px 16px; border-radius: 20px; border: 1px solid var(--neon); color: var(--neon); text-decoration: none; margin: 4px; display: inline-block; font-size: 13px; transition: 0.3s; }
     .cat-pill.active, .cat-pill:hover { background: var(--neon); color: var(--dark); font-weight: bold; }
-    
-    /* Sidebar */
     .sidebar { width: 260px; height: 100vh; background: #1f2833; position: fixed; top: 0; left: 0; padding: 20px 0; border-right: 2px solid var(--neon); z-index: 1000; }
     .sidebar-brand { text-align: center; padding: 0 20px 20px; border-bottom: 1px solid #45a29e; margin-bottom: 20px; }
     .sidebar a { padding: 12px 25px; text-decoration: none; font-size: 15px; color: #fff; display: flex; align-items: center; transition: 0.3s; }
     .sidebar a:hover, .sidebar a.active { background: var(--neon); color: var(--dark); font-weight: bold; }
-    .sidebar a i { margin-right: 10px; }
-    
     .main-content { margin-left: 260px; padding: 30px; min-height: 100vh; }
     .admin-card { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 25px; }
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
@@ -547,7 +555,6 @@ COMMON_STYLE = """
 </style>
 """
 
-# --- [USER SIDE HTML] ---
 HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>{{{{config.SITE_NAME}}}}</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + """
 <nav class="navbar navbar-dark sticky-top mb-4"><div class="container">
     <a class="navbar-brand fw-bold d-flex align-items-center text-info" href="/">
@@ -621,7 +628,6 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
     {% if m.trailer %}<div class="mt-5"><h4>Trailer</h4><div class="ratio ratio-16x9 rounded border border-info shadow-lg"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
 </div></body></html>"""
 
-# --- [ADMIN PANEL HTML STRUCTURE] ---
 ADMIN_SIDEBAR = """
 <div class="sidebar">
     <div class="sidebar-brand">
@@ -641,16 +647,8 @@ ADMIN_DASHBOARD_HTML = f"<!DOCTYPE html><html><head><title>Admin Dashboard</titl
 <div class="main-content">
     <h3>Welcome, Administrator</h3><hr>
     <div class="row">
-        <div class="col-md-4">
-            <div class="admin-card text-center bg-primary text-white">
-                <h2>{{stats.users}}</h2><p>Total Bot Users</p>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="admin-card text-center bg-success text-white">
-                <h2>{{stats.movies}}</h2><p>Total Movies/TV</p>
-            </div>
-        </div>
+        <div class="col-md-4"><div class="admin-card text-center bg-primary text-white"><h2>{{stats.users}}</h2><p>Total Bot Users</p></div></div>
+        <div class="col-md-4"><div class="admin-card text-center bg-success text-white"><h2>{{stats.movies}}</h2><p>Total Movies/TV</p></div></div>
     </div>
 </div></body></html>"""
 
@@ -749,14 +747,14 @@ ADMIN_SETTINGS_HTML = f"<!DOCTYPE html><html><head><title>Settings</title><link 
             <div class="row">
                 <div class="col-md-6 mb-3"><label>Site Name</label><input name="site_name" class="form-control" value="{{config.SITE_NAME}}"></div>
                 <div class="col-md-6 mb-3"><label>Site Logo URL</label><input name="site_logo" class="form-control" value="{{config.SITE_LOGO}}"></div>
-                <div class="col-md-6 mb-3"><label>Site URL (Without last /)</label><input name="site_url" class="form-control" value="{{config.SITE_URL}}"></div>
+                <div class="col-md-6 mb-3"><label>Site URL</label><input name="site_url" class="form-control" value="{{config.SITE_URL}}"></div>
                 <div class="col-md-6 mb-3"><label>Telegram Bot Token</label><input name="token" class="form-control" value="{{config.BOT_TOKEN}}"></div>
                 <div class="col-md-6 mb-3"><label>TMDb API Key</label><input name="tmdb" class="form-control" value="{{config.TMDB_API_KEY}}"></div>
                 <div class="col-md-6 mb-3"><label>Admin Telegram ID</label><input name="admin_id" class="form-control" value="{{config.ADMIN_ID}}"></div>
                 <div class="col-md-6 mb-3"><label>Storage Channel ID</label><input name="channel_id" class="form-control" value="{{config.STORAGE_CHANNEL_ID}}"></div>
-                <div class="col-md-6 mb-3"><label>Shortener Domain</label><input name="s_url" class="form-control" value="{{config.SHORTENER_URL}}" placeholder="api.gplinks.com"></div>
+                <div class="col-md-6 mb-3"><label>Shortener Domain</label><input name="s_url" class="form-control" value="{{config.SHORTENER_URL}}"></div>
                 <div class="col-md-6 mb-3"><label>Shortener API Key</label><input name="s_api" class="form-control" value="{{config.SHORTENER_API}}"></div>
-                <div class="col-md-6 mb-3"><label>Auto Delete Time (Sec, 0 to disable)</label><input name="delete_time" type="number" class="form-control" value="{{config.AUTO_DELETE_TIME}}"></div>
+                <div class="col-md-6 mb-3"><label>Auto Delete Time (Sec)</label><input name="delete_time" type="number" class="form-control" value="{{config.AUTO_DELETE_TIME}}"></div>
             </div>
             <button class="btn btn-primary w-100 mt-2">💾 Save Configuration</button>
         </form>
@@ -797,10 +795,7 @@ EDIT_HTML = f"<!DOCTYPE html><html><head><title>Edit Content</title><link rel='s
                 <h6>Current Links:</h6>
                 <ul class="list-group">
                     {% if m.files %}{% for f in m.files %}
-                    <li class="list-group-item d-flex justify-content-between">
-                        {{f.quality}} (ID: {{f.file_id}})
-                        <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">X</a>
-                    </li>
+                    <li class="list-group-item d-flex justify-content-between">{{f.quality}} (ID: {{f.file_id}})<a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">X</a></li>
                     {% endfor %}{% else %}<li class="list-group-item text-muted">No links.</li>{% endif %}
                 </ul>
             </div>
