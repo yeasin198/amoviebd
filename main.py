@@ -20,7 +20,7 @@ try:
     config_col = db['bot_config']      
     movies_col = db['movies_data']      
     episodes_col = db['episodes_data']
-    users_col = db['bot_users'] # নতুন: ব্রডকাস্টের জন্য ইউজার ট্র্যাক
+    users_col = db['bot_users'] 
     print("✅ MongoDB Connected Successfully!")
 except Exception as e:
     print(f"❌ MongoDB Connection Error: {e}")
@@ -85,7 +85,6 @@ def register_handlers(bot_inst):
 
     @bot_inst.message_handler(commands=['start'])
     def start(message):
-        # ইউজার সেভ করা (ব্রডকাস্ট ফিচারের জন্য)
         if not users_col.find_one({'user_id': message.from_user.id}):
             users_col.insert_one({'user_id': message.from_user.id, 'name': message.from_user.first_name})
             
@@ -135,11 +134,11 @@ def register_handlers(bot_inst):
     def post_search(message):
         config = get_config()
         if str(message.from_user.id) != str(config.get('ADMIN_ID')):
-            bot_inst.reply_to(message, f"🚫 আপনি এডমিন নন। আপনার আইডি: `{message.from_user.id}`। এটি এডমিন প্যানেলে সেট করুন।")
+            bot_inst.reply_to(message, f"🚫 আপনি এডমিন নন।")
             return
         query = message.text.replace('/post', '').strip()
         if not query:
-            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। উদাহরণ: `/post Avatar`")
+            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন।")
             return
         
         tmdb_api = config.get('TMDB_API_KEY')
@@ -148,7 +147,7 @@ def register_handlers(bot_inst):
         except: res = []
 
         if not res:
-            bot_inst.reply_to(message, "❌ কিছুই খুঁজে পাওয়া যায়নি।")
+            bot_inst.reply_to(message, "❌ কিছুই পাওয়া যায়নি।")
             return
 
         markup = types.InlineKeyboardMarkup()
@@ -260,13 +259,12 @@ def register_handlers(bot_inst):
         except Exception as e:
             bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
 
-# --- [বট ইনিট ফাংশন - অটো ওয়েবহুক সেটআপের জন্য] ---
+# --- [বট ইনিট ফাংশন] ---
 def init_bot_service():
     global bot
     config = get_config()
     token = config.get('BOT_TOKEN')
     site_url = config.get('SITE_URL')
-    
     if token and len(token) > 20:
         try:
             bot = telebot.TeleBot(token, threaded=False)
@@ -290,14 +288,12 @@ def home():
     page = int(request.args.get('page', 1))
     limit = 24 
     skip = (page - 1) * limit
-    
     if q:
         total = movies_col.count_documents({"title": {"$regex": q, "$options": "i"}})
         movies = list(movies_col.find({"title": {"$regex": q, "$options": "i"}}).sort('_id', -1).skip(skip).limit(limit))
     else:
         total = movies_col.count_documents({})
         movies = list(movies_col.find().sort('_id', -1).skip(skip).limit(limit))
-    
     pages = math.ceil(total / limit)
     return render_template_string(HOME_HTML, movies=movies, query=q, page=page, pages=pages)
 
@@ -346,6 +342,21 @@ def admin():
         movies = list(movies_col.find().sort('_id', -1))
     return render_template_string(ADMIN_HTML, config=get_config(), movies=movies, q=q)
 
+# নতুন রাউট: TMDb Search এর জন্য
+@app.route('/admin/search_tmdb', methods=['POST'])
+def search_tmdb():
+    if not session.get('logged_in'): return jsonify({'error': 'Unauthorized'})
+    query = request.form.get('query')
+    tmdb_key = get_config().get('TMDB_API_KEY')
+    if not tmdb_key: return jsonify({'error': 'TMDB Key missing'})
+    
+    url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={query}"
+    try:
+        res = requests.get(url).json().get('results', [])
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
 @app.route('/admin/fetch_info', methods=['POST'])
 def fetch_info():
     if not session.get('logged_in'): return jsonify({'error': 'Unauthorized'})
@@ -354,8 +365,10 @@ def fetch_info():
     if not tmdb_key: return jsonify({'error': 'TMDB Key missing'})
 
     tmdb_id, media_type = None, "movie"
+    # সরাসরী ID বা লিঙ্কের জন্য
     imdb_match = re.search(r'tt\d+', url)
     tmdb_match = re.search(r'tmdb.org/(movie|tv)/(\d+)', url)
+    only_id_match = re.match(r'^\d+$', url) # শুধু ID দিলে
 
     try:
         if imdb_match:
@@ -365,8 +378,11 @@ def fetch_info():
             elif res.get('tv_results'): tmdb_id, media_type = res['tv_results'][0]['id'], "tv"
         elif tmdb_match:
             media_type, tmdb_id = tmdb_match.group(1), tmdb_match.group(2)
-        
-        if not tmdb_id: return jsonify({'error': 'ID not found in link'})
+        elif only_id_match:
+            tmdb_id = url
+            media_type = request.form.get('type', 'movie') # ডিফল্ট মুভি
+
+        if not tmdb_id: return jsonify({'error': 'ID not found'})
 
         m = requests.get(f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={tmdb_key}&append_to_response=credits,videos").json()
         trailer = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
@@ -444,7 +460,7 @@ def save_config():
         'PROTECT_CONTENT': request.form.get('protect')
     }
     config_col.update_one({'type': 'core_settings'}, {'$set': data}, upsert=True)
-    init_bot_service() # কনফিগ সেভ হলে সার্ভিস রি-ইনিট হবে
+    init_bot_service() 
     return redirect(url_for('admin'))
 
 @app.route('/delete/<tmdb_id>')
@@ -474,8 +490,9 @@ COMMON_STYLE = """
     .navbar { background: #1f2833; border-bottom: 2px solid #66fcf1; }
     .poster-img { height: 260px; width: 100%; object-fit: cover; }
     .admin-box { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 20px; }
-    .pagination .page-link { background: #1f2833; color: #66fcf1; border: 1px solid #45a29e; }
-    .pagination .active .page-link { background: #66fcf1; color: #000; border: 1px solid #66fcf1; }
+    .search-results { position: absolute; background: white; width: 93%; z-index: 100; max-height: 250px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+    .search-item { padding: 10px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 14px; }
+    .search-item:hover { background: #f8f9fa; }
 </style>
 """
 
@@ -552,51 +569,48 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
     {% if m.trailer %}<div class="mt-5"><h4>Trailer</h4><div class="ratio ratio-16x9 rounded border border-info shadow-lg"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
 </div></body></html>"""
 
-ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"><script src="https://code.jquery.com/jquery-3.6.0.min.js"></script></head><body class="bg-light py-4 container">
+ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"><script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>""" + COMMON_STYLE + """</head><body class="bg-light py-4 container">
 <div class="d-flex justify-content-between mb-4"><h2>⚙️ Admin Panel</h2><a href="/" class="btn btn-dark">Visit Site</a></div>
 <div class="row">
     <div class="col-md-5">
-        <div class="admin-box">
-            <h5>🔗 Fetch Data</h5>
-            <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="IMDb/TMDB Link..."><button class="btn btn-primary" onclick="fetchData()">Fetch</button></div>
+        <div class="admin-box position-relative">
+            <h5>🔍 TMDb Search</h5>
+            <div class="input-group mb-2">
+                <input id="tmdb_search_input" class="form-control" placeholder="Type Movie/TV Show Name...">
+                <button class="btn btn-primary" onclick="searchTMDB()">Search</button>
+            </div>
+            <div id="search_results_box" class="search-results" style="display:none;"></div>
+            
+            <hr>
+            <h5>🔗 Fetch by ID/Link</h5>
+            <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="IMDb Link or TMDb ID..."><button class="btn btn-secondary" onclick="fetchData()">Fetch</button></div>
+            
             <hr>
             <form action="/admin/manual_add" method="POST">
                 <input id="f_title" name="title" class="form-control mb-2" placeholder="Title" required>
                 <input id="f_id" name="tmdb_id" class="form-control mb-2" placeholder="TMDB ID" required>
-                <input id="f_type" name="type" type="hidden" value="movie">
+                <select id="f_type" name="type" class="form-control mb-2">
+                    <option value="movie">Movie</option>
+                    <option value="tv">TV Series</option>
+                </select>
                 <input id="f_year" name="year" class="form-control mb-2" placeholder="Year">
                 <input id="f_rating" name="rating" class="form-control mb-2" placeholder="Rating">
                 <input id="f_poster" name="poster" class="form-control mb-2" placeholder="Poster URL">
                 <input id="f_trailer" name="trailer" class="form-control mb-2" placeholder="Trailer Link">
-                <textarea id="f_story" name="story" class="form-control mb-2" placeholder="Storyline"></textarea>
+                <textarea id="f_story" name="story" class="form-control mb-2" placeholder="Storyline" rows="3"></textarea>
                 <input id="f_director" name="director" class="form-control mb-2" placeholder="Director">
                 <input id="f_cast" name="cast" class="form-control mb-2" placeholder="Cast">
                 <button class="btn btn-success w-100">Save Metadata</button>
             </form>
         </div>
+        
         <div class="admin-box">
-            <h5>🔧 Global Configuration</h5>
+            <h5>🔧 Configuration</h5>
             <form action="/save_config" method="POST">
-                <label class="small fw-bold">Site URL (https://yourdomain.com)</label>
-                <input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}" placeholder="https://domain.com">
-                <label class="small fw-bold">Bot Token</label>
-                <input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}">
-                <label class="small fw-bold">Admin Telegram ID</label>
-                <input name="admin_id" class="form-control mb-2" value="{{config.ADMIN_ID}}">
-                <label class="small fw-bold">TMDB API Key</label>
-                <input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}">
-                <label class="small fw-bold">Storage Channel ID</label>
-                <input name="channel_id" class="form-control mb-2" value="{{config.STORAGE_CHANNEL_ID}}">
-                <label class="small fw-bold">Auto Delete (Seconds)</label>
-                <input name="delete_time" type="number" class="form-control mb-2" value="{{config.AUTO_DELETE_TIME}}">
-                <label class="small fw-bold">Protect Content</label>
-                <select name="protect" class="form-control mb-2">
-                    <option value="off" {% if config.PROTECT_CONTENT == 'off' %}selected{% endif %}>OFF</option>
-                    <option value="on" {% if config.PROTECT_CONTENT == 'on' %}selected{% endif %}>ON</option>
-                </select>
-                <label class="small fw-bold">Shortener Domain & API Key</label>
-                <input name="s_url" class="form-control mb-1" placeholder="e.g. gplinks.in" value="{{config.SHORTENER_URL}}">
-                <input name="s_api" class="form-control mb-2" placeholder="API Key" value="{{config.SHORTENER_API}}">
+                <input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}" placeholder="Site URL">
+                <input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}" placeholder="Bot Token">
+                <input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}" placeholder="TMDB API Key">
+                <input name="channel_id" class="form-control mb-2" value="{{config.STORAGE_CHANNEL_ID}}" placeholder="Storage Channel ID">
                 <button class="btn btn-dark w-100">Update Config</button>
             </form>
         </div>
@@ -616,17 +630,53 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
         </div>
     </div>
 </div>
+
 <script>
+function searchTMDB() {
+    let query = $('#tmdb_search_input').val();
+    if(!query) return;
+    $.post('/admin/search_tmdb', {query: query}, function(data) {
+        let html = '';
+        data.forEach(item => {
+            if(item.media_type == 'movie' || item.media_type == 'tv') {
+                let name = item.title || item.name;
+                let date = item.release_date || item.first_air_date || '';
+                let year = date.substring(0,4);
+                html += `<div class="search-item" onclick="selectFromSearch('${item.media_type}', '${item.id}')">
+                            <b>[${item.media_type.toUpperCase()}]</b> ${name} (${year})
+                         </div>`;
+            }
+        });
+        $('#search_results_box').html(html).show();
+    });
+}
+
+function selectFromSearch(type, id) {
+    $('#f_type').val(type);
+    $('#url_in').val(id);
+    $('#search_results_box').hide();
+    fetchData(); // সরাসরী ফেচ করে তথ্য বসিয়ে দিবে
+}
+
 function fetchData() {
     let u = $('#url_in').val();
-    $.post('/admin/fetch_info', {url: u}, function(d) {
+    let type = $('#f_type').val();
+    $.post('/admin/fetch_info', {url: u, type: type}, function(d) {
         if(d.error) return alert(d.error);
         $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year);
         $('#f_rating').val(d.rating); $('#f_poster').val(d.poster); $('#f_trailer').val(d.trailer);
         $('#f_director').val(d.director); $('#f_cast').val(d.cast); $('#f_story').val(d.story); $('#f_type').val(d.type);
-        alert('Data Fetched!');
+        alert('Data Loaded!');
     });
 }
+
+// বাইরের দিকে ক্লিক করলে সার্চ বক্স বন্ধ হবে
+$(document).mouseup(function(e) {
+    var container = $("#search_results_box");
+    if (!container.is(e.target) && container.has(e.target).length === 0) {
+        container.hide();
+    }
+});
 </script>
 </body></html>"""
 
@@ -679,7 +729,6 @@ LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="styles
     <form method="POST"><input name="u" class="form-control mb-2" placeholder="User"><input name="p" type="password" class="form-control mb-3" placeholder="Pass"><button class="btn btn-primary w-100">Login</button></form>
 </div></body></html>"""
 
-# অ্যাপ শুরু হওয়ার সময় বট অটো কনফিগার করার লজিক
 with app.app_context():
     init_bot_service()
 
