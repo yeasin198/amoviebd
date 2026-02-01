@@ -167,8 +167,8 @@ def register_handlers(bot_inst):
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
     def handle_selection(call):
         _, m_type, m_id = call.data.split('_')
-        # নতুন স্টেট: একাধিক ফাইল রাখার জন্য 'all_files' লিস্ট যোগ করা হয়েছে
-        admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id, 'all_files': []}
+        # মাল্টিপল ফাইল স্টোর করার জন্য 'temp_files' ডিকশনারি
+        admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id, 'temp_files': []}
         
         if m_type == 'movie':
             ask_movie_lang(call.message, m_id)
@@ -243,44 +243,43 @@ def register_handlers(bot_inst):
             # ফাইল স্টোরেজ চ্যানেলে কপি করা
             sent_msg = bot_inst.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
             
-            # ফাইলের ডিটেইলস সাময়িকভাবে লিস্টে জমা রাখা
+            # ফাইলের ডিটেইলস সেভ করা
             file_label = f"{state.get('lang', '')} {state.get('qual', 'HD')}".strip()
             file_data = {'quality': file_label, 'file_id': sent_msg.message_id}
-            admin_states[uid]['all_files'].append(file_data)
+            admin_states[uid]['temp_files'].append(file_data)
 
-            # বাটন দেখানো যাতে আরো ফাইল যোগ বা ফিনিশ করা যায়
+            # বাটন দেখানো
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("➕ Add More Quality", callback_data="add_more_file"))
+            markup.add(types.InlineKeyboardButton("➕ Add More Quality", callback_data="add_more_qual"))
             markup.add(types.InlineKeyboardButton("✅ Finish Upload", callback_data="finish_upload"))
             
             bot_inst.reply_to(message, f"📥 ফাইল গ্রহণ করা হয়েছে: {file_label}\nএখন কি করতে চান?", reply_markup=markup)
-            
         except Exception as e:
             bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
 
-    @bot_inst.callback_query_handler(func=lambda call: call.data == "add_more_file")
-    def add_more_file(call):
+    @bot_inst.callback_query_handler(func=lambda call: call.data == "add_more_qual")
+    def add_more_files(call):
         uid = call.from_user.id
         if uid in admin_states:
             state = admin_states[uid]
             if state['type'] == 'movie':
                 ask_movie_lang(call.message, state['tmdb_id'])
             else:
-                msg = bot_inst.send_message(call.message.chat.id, "📥 পরবর্তী কোয়ালিটি লিখুন (বা /cancel):")
+                msg = bot_inst.send_message(call.message.chat.id, "📥 কোয়ালিটি লিখুন (বা /cancel):")
                 bot_inst.register_next_step_handler(msg, get_tv_quality)
 
     @bot_inst.callback_query_handler(func=lambda call: call.data == "finish_upload")
-    def handle_finish(call):
+    def finish_process_and_save(call):
         uid = call.from_user.id
         if uid not in admin_states: return
         config = get_config()
         state = admin_states[uid]
         
-        if not state['all_files']:
+        if not state['temp_files']:
             bot_inst.answer_callback_query(call.id, "⚠️ কোনো ফাইল পাঠানো হয়নি!")
             return
 
-        bot_inst.edit_message_text("⌛ ডাটাবেসে সেভ হচ্ছে, দয়া করে অপেক্ষা করুন...", call.message.chat.id, call.message.message_id)
+        bot_inst.edit_message_text("⌛ ডাটাবেসে সেভ হচ্ছে, অপেক্ষা করুন...", call.message.chat.id, call.message.message_id)
         
         try:
             tmdb_api = config['TMDB_API_KEY']
@@ -308,23 +307,21 @@ def register_handlers(bot_inst):
                 'cast': cast, 'director': director, 'category': auto_cat,
                 'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else ""
             }
-            
-            # ডাটাবেসে মুভির তথ্য আপডেট বা ইনসার্ট করা
+            # মেটাডাটা আপডেট/ইনসার্ট
             movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
 
-            # সব ফাইল একসাথে ডাটাবেসে পুশ করা
+            # ফাইলগুলো পুশ করা
             if state['type'] == 'movie':
-                movies_col.update_one({'tmdb_id': state['tmdb_id']}, {'$push': {'files': {'$each': state['all_files']}}})
+                movies_col.update_one({'tmdb_id': state['tmdb_id']}, {'$push': {'files': {'$each': state['temp_files']}}})
             else:
                 episodes_col.update_one(
                     {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
                     {'$set': {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
-                     '$push': {'files': {'$each': state['all_files']}}}, upsert=True
+                     '$push': {'files': {'$each': state['temp_files']}}}, upsert=True
                 )
             
-            bot_inst.send_message(call.message.chat.id, f"✅ সফলভাবে পাবলিশ হয়েছে: {title}\n📂 মোট ফাইল অ্যাড হয়েছে: {len(state['all_files'])}\n📂 ক্যাটাগরি: {auto_cat}")
+            bot_inst.send_message(call.message.chat.id, f"✅ সফলভাবে পাবলিশ হয়েছে: {title}\n📂 ক্যাটাগরি: {auto_cat}\n💎 কোয়ালিটি সংখ্যা: {len(state['temp_files'])}")
             del admin_states[uid]
-            
         except Exception as e:
             bot_inst.send_message(call.message.chat.id, f"❌ এরর: {e}")
 
@@ -366,8 +363,12 @@ def home():
 
     total = movies_col.count_documents(query_filter)
     movies = list(movies_col.find(query_filter).sort('_id', -1).skip(skip).limit(limit))
+    
+    # স্লাইডারের জন্য সর্বশেষ ৬টি মুভি
+    slider_movies = list(movies_col.find({}).sort('_id', -1).limit(6))
+    
     pages = math.ceil(total / limit)
-    return render_template_string(HOME_HTML, movies=movies, query=q, cat=cat, page=page, pages=pages, categories=CATEGORIES, config=config)
+    return render_template_string(HOME_HTML, movies=movies, slider_movies=slider_movies, query=q, cat=cat, page=page, pages=pages, categories=CATEGORIES, config=config)
 
 @app.route('/movie/<tmdb_id>')
 def movie_details(tmdb_id):
@@ -580,6 +581,12 @@ COMMON_STYLE = """
     :root { --neon: #66fcf1; --dark: #0b0c10; --card: #1f2833; --text: #c5c6c7; }
     body { background: var(--dark); color: var(--text); font-family: 'Poppins', sans-serif; overflow-x: hidden; }
     
+    /* Slider Styles */
+    .hero-slider { margin-bottom: 40px; border-radius: 15px; overflow: hidden; border: 2px solid var(--neon); box-shadow: 0 0 15px rgba(102, 252, 241, 0.3); }
+    .carousel-item img { height: 450px; width: 100%; object-fit: cover; filter: brightness(0.6); }
+    .carousel-caption { background: rgba(0,0,0,0.6); border-radius: 10px; padding: 20px; border: 1px solid var(--neon); bottom: 10%; }
+    .carousel-caption h3 { color: var(--neon); font-weight: 600; }
+
     .neon-card { background: var(--card); border: 1px solid #45a29e; border-radius: 12px; transition: 0.5s; overflow: hidden; position: relative; }
     .neon-card:hover { transform: translateY(-8px); box-shadow: 0 0 20px var(--neon); border-color: var(--neon); }
     .btn-neon { background: var(--neon); color: var(--dark); font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.3s; display: inline-block; cursor:pointer;}
@@ -597,9 +604,6 @@ COMMON_STYLE = """
     .admin-card { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 25px; }
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
     .logo-img { height: 40px; width: 40px; border-radius: 50%; object-fit: cover; margin-right: 10px; border: 1px solid var(--neon); }
-    .search-results { position: absolute; background: white; width: 95%; z-index: 100; max-height: 250px; overflow-y: auto; border: 1px solid #ddd; border-radius: 0 0 8px 8px; }
-    .search-item { padding: 10px; cursor: pointer; border-bottom: 1px solid #eee; }
-    .search-item:hover { background: #f8f9fa; }
 </style>
 """
 
@@ -613,31 +617,62 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
         <button class="btn btn-outline-info" type="submit">🔍</button>
     </form>
 </div></nav>
-<div class="container mb-4 text-center">
-    <a href="/" class="cat-pill {% if not cat %}active{% endif %}">All</a>
-    {% for c in categories %}
-    <a href="/?cat={{c}}" class="cat-pill {% if cat == c %}active{% endif %}">{{c}}</a>
-    {% endfor %}
-</div>
-<div class="container"><div class="row row-cols-2 row-cols-md-4 row-cols-lg-6 g-3">
-{% for m in movies %}
-<div class="col"><a href="/movie/{{m.tmdb_id}}" style="text-decoration:none; color:inherit;">
-    <div class="neon-card">
-        <img src="{{m.poster}}" class="w-100" style="height:260px; object-fit:cover;" loading="lazy">
-        <div class="p-2 text-center">
-            <div class="small fw-bold text-truncate">{{m.title}}</div>
-            <div class="text-info small">⭐ {{m.rating}} | {{m.year}}</div>
+
+<div class="container">
+    <!-- Slider Section -->
+    {% if slider_movies and not query and not cat %}
+    <div id="heroSlider" class="carousel slide hero-slider" data-bs-ride="carousel">
+        <div class="carousel-inner">
+            {% for m in slider_movies %}
+            <div class="carousel-item {% if loop.first %}active{% endif %}">
+                <a href="/movie/{{m.tmdb_id}}">
+                    <img src="{{m.poster}}" class="d-block w-100" alt="{{m.title}}">
+                    <div class="carousel-caption d-none d-md-block">
+                        <h3>{{m.title}} ({{m.year}})</h3>
+                        <p>⭐ Rating: {{m.rating}} | 📂 Category: {{m.category}}</p>
+                    </div>
+                </a>
+            </div>
+            {% endfor %}
         </div>
+        <button class="carousel-control-prev" type="button" data-bs-target="#heroSlider" data-bs-slide="prev">
+            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+        </button>
+        <button class="carousel-control-next" type="button" data-bs-target="#heroSlider" data-bs-slide="next">
+            <span class="carousel-control-next-icon" aria-hidden="true"></span>
+        </button>
     </div>
-</a></div>
-{% endfor %}
-</div>
-<nav class="mt-4"><ul class="pagination justify-content-center">
-    {% for p in range(1, pages + 1) %}
-    <li class="page-item {% if p == page %}active{% endif %}"><a class="page-link" href="/?page={{p}}{% if query %}&search={{query}}{% endif %}{% if cat %}&cat={{cat}}{% endif %}">{{p}}</a></li>
+    {% endif %}
+
+    <div class="container mb-4 text-center">
+        <a href="/" class="cat-pill {% if not cat %}active{% endif %}">All</a>
+        {% for c in categories %}
+        <a href="/?cat={{c}}" class="cat-pill {% if cat == c %}active{% endif %}">{{c}}</a>
+        {% endfor %}
+    </div>
+
+    <div class="row row-cols-2 row-cols-md-4 row-cols-lg-6 g-3">
+    {% for m in movies %}
+    <div class="col"><a href="/movie/{{m.tmdb_id}}" style="text-decoration:none; color:inherit;">
+        <div class="neon-card">
+            <img src="{{m.poster}}" class="w-100" style="height:260px; object-fit:cover;" loading="lazy">
+            <div class="p-2 text-center">
+                <div class="small fw-bold text-truncate">{{m.title}}</div>
+                <div class="text-info small">⭐ {{m.rating}} | {{m.year}}</div>
+            </div>
+        </div>
+    </a></div>
     {% endfor %}
-</ul></nav>
-</div></body></html>"""
+    </div>
+
+    <nav class="mt-4"><ul class="pagination justify-content-center">
+        {% for p in range(1, pages + 1) %}
+        <li class="page-item {% if p == page %}active{% endif %}"><a class="page-link" href="/?page={{p}}{% if query %}&search={{query}}{% endif %}{% if cat %}&cat={{cat}}{% endif %}">{{p}}</a></li>
+        {% endfor %}
+    </ul></nav>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body></html>"""
 
 DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'>" + """
 <title>{{m.title}} ({{m.year}}) - {{config.SITE_NAME}}</title>
