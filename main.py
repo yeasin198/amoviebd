@@ -4,7 +4,7 @@ import os
 import time
 import threading
 import urllib.parse
-import re  # নতুন ইমপোর্ট
+import re
 from telebot import types
 from pymongo import MongoClient
 from bson import ObjectId
@@ -108,7 +108,7 @@ def register_handlers(bot):
         if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
         query = message.text.replace('/post', '').strip()
         if not query:
-            bot.reply_to(message, "⚠️ মুভির নাম লিখুন।")
+            bot.reply_to(message, "⚠️ মুভির নাম লিখুন। উদাহরণ: `/post Avatar`")
             return
         
         tmdb_api = config.get('TMDB_API_KEY')
@@ -152,7 +152,7 @@ def register_handlers(bot):
         uid = message.from_user.id
         if uid in admin_states:
             admin_states[uid]['episode'] = message.text
-            bot.send_message(message.chat.id, "📥 কোয়ালিটি লিখুন:")
+            bot.send_message(message.chat.id, "📥 কোয়ালিটি লিখুন (যেমন: 720p):")
             bot.register_next_step_handler(message, get_tv_quality)
 
     def get_tv_quality(message):
@@ -246,7 +246,9 @@ def movie_details(tmdb_id):
     if not movie: return "Not Found", 404
     config = get_config()
     bot_user = ""
-    try: bot_user = telebot.TeleBot(config['BOT_TOKEN']).get_me().username
+    try:
+        bot = create_bot()
+        if bot: bot_user = bot.get_me().username
     except: pass
 
     if 'files' in movie:
@@ -284,7 +286,6 @@ def admin():
         movies = list(movies_col.find().sort('_id', -1))
     return render_template_string(ADMIN_HTML, config=get_config(), movies=movies, q=q)
 
-# --- [নতুন: অটোমেটিক ডাটা ফেচিং রুট] ---
 @app.route('/admin/fetch_info', methods=['POST'])
 def fetch_info():
     if not session.get('logged_in'): return jsonify({'error': 'Unauthorized'})
@@ -305,7 +306,7 @@ def fetch_info():
         elif tmdb_match:
             media_type, tmdb_id = tmdb_match.group(1), tmdb_match.group(2)
         
-        if not tmdb_id: return jsonify({'error': 'ID not found'})
+        if not tmdb_id: return jsonify({'error': 'ID not found in link'})
 
         m = requests.get(f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={tmdb_key}&append_to_response=credits,videos").json()
         trailer = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
@@ -323,23 +324,16 @@ def fetch_info():
 @app.route('/admin/manual_add', methods=['POST'])
 def manual_add():
     if not session.get('logged_in'): return redirect(url_for('login'))
-    tmdb_id = request.form.get('tmdb_id')
-    
+    tid = request.form.get('tmdb_id')
     movie_info = {
-        'tmdb_id': tmdb_id, 'type': request.form.get('type', 'movie'), 'title': request.form.get('title'),
+        'tmdb_id': tid, 'type': request.form.get('type', 'movie'), 'title': request.form.get('title'),
         'year': request.form.get('year'), 'poster': request.form.get('poster'),
         'rating': request.form.get('rating'), 'story': request.form.get('story'),
         'director': request.form.get('director'), 'cast': request.form.get('cast'),
         'trailer': request.form.get('trailer')
     }
-    movies_col.update_one({'tmdb_id': tmdb_id}, {'$set': movie_info}, upsert=True)
-    
-    file_id = request.form.get('file_id')
-    if file_id:
-        file_data = {'quality': f"{request.form.get('lang', '')} {request.form.get('quality', '')}".strip(), 'file_id': file_id}
-        movies_col.update_one({'tmdb_id': tmdb_id}, {'$push': {'files': file_data}})
-    
-    return redirect(url_for('edit_movie', tmdb_id=tmdb_id))
+    movies_col.update_one({'tmdb_id': tid}, {'$set': movie_info}, upsert=True)
+    return redirect(url_for('edit_movie', tmdb_id=tid))
 
 @app.route('/admin/add_file', methods=['POST'])
 def add_file():
@@ -408,7 +402,7 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates (Full) ==================
+# ================== HTML Templates ==================
 
 COMMON_STYLE = """
 <style>
@@ -420,7 +414,7 @@ COMMON_STYLE = """
     .btn-neon:hover { background: #45a29e; color: #fff; }
     .navbar { background: #1f2833; border-bottom: 2px solid #66fcf1; }
     .poster-img { height: 260px; width: 100%; object-fit: cover; border-radius: 12px 12px 0 0; }
-    .admin-box { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+    .admin-box { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 20px; }
 </style>
 """
 
@@ -463,7 +457,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
                     <a href="{{f.short_url}}" target="_blank" class="btn-neon d-inline-block mb-2 me-2">🚀 Download {{f.quality}}</a>
                     {% endfor %}
                 {% else %}
-                    <a href="https://t.me/{{bot_user}}?start=m_{{m.tmdb_id}}" class="btn-neon">🚀 Get in Bot</a>
+                    <p class="text-warning">Direct links not added yet.</p>
                 {% endif %}
             {% else %}
                 {% for s, eps in seasons.items() %}
@@ -474,7 +468,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
                         {% if ep.files %}
                             {% for f in ep.files %}<a href="{{f.short_url}}" class="btn btn-sm btn-outline-info ms-1">{{f.quality}}</a>{% endfor %}
                         {% else %}
-                            <a href="https://t.me/{{bot_user}}?start=e_{{ep._id}}" class="btn btn-sm btn-outline-warning">Bot</a>
+                            <span class="text-muted small">No links</span>
                         {% endif %}
                     </div>
                     {% endfor %}
@@ -486,11 +480,11 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
     {% if m.trailer %}<div class="mt-5"><h4>Trailer</h4><div class="ratio ratio-16x9 rounded border border-info shadow-lg"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
 </div></body></html>"""
 
-ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Dashboard</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"><script src="https://code.jquery.com/jquery-3.6.0.min.js"></script></head><body class="bg-light py-4 container">
+ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"><script src="https://code.jquery.com/jquery-3.6.0.min.js"></script></head><body class="bg-light py-4 container">
 <div class="d-flex justify-content-between mb-4"><h2>⚙️ Admin Panel</h2><a href="/" class="btn btn-dark">Visit Site</a></div>
 <div class="row">
     <div class="col-md-5">
-        <div class="admin-box mb-4">
+        <div class="admin-box">
             <h5>🔗 Fetch from Link (IMDb/TMDB)</h5>
             <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="Paste Link..."><button class="btn btn-primary" onclick="fetchData()">Fetch</button></div>
             <hr>
@@ -504,18 +498,30 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Dashboard</title><link r
                 <textarea id="f_story" name="story" class="form-control mb-2" placeholder="Storyline"></textarea>
                 <input id="f_director" name="director" class="form-control mb-2" placeholder="Director">
                 <input id="f_cast" name="cast" class="form-control mb-2" placeholder="Cast">
-                <button class="btn btn-primary w-100">Save & Add Qualities</button>
+                <button class="btn btn-success w-100">Save Metadata</button>
             </form>
         </div>
         <div class="admin-box">
-            <h5>🔧 Configuration</h5>
+            <h5>🔧 Global Configuration</h5>
             <form action="/save_config" method="POST">
-                <input name="token" class="form-control mb-2" placeholder="Bot Token" value="{{config.BOT_TOKEN}}">
-                <input name="tmdb" class="form-control mb-2" placeholder="TMDB Key" value="{{config.TMDB_API_KEY}}">
-                <input name="site_url" class="form-control mb-2" placeholder="Site URL" value="{{config.SITE_URL}}">
-                <input name="channel_id" class="form-control mb-2" placeholder="Channel ID" value="{{config.STORAGE_CHANNEL_ID}}">
-                <input name="s_url" class="form-control mb-2" placeholder="Shortener API URL" value="{{config.SHORTENER_URL}}">
-                <input name="s_api" class="form-control mb-2" placeholder="Shortener API Key" value="{{config.SHORTENER_API}}">
+                <label class="small fw-bold">Bot Token</label>
+                <input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}">
+                <label class="small fw-bold">Admin Telegram ID</label>
+                <input name="admin_id" class="form-control mb-2" value="{{config.ADMIN_ID}}">
+                <label class="small fw-bold">TMDB API Key</label>
+                <input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}">
+                <label class="small fw-bold">Storage Channel ID</label>
+                <input name="channel_id" class="form-control mb-2" value="{{config.STORAGE_CHANNEL_ID}}">
+                <label class="small fw-bold">Auto Delete (Seconds)</label>
+                <input name="delete_time" type="number" class="form-control mb-2" value="{{config.AUTO_DELETE_TIME}}">
+                <label class="small fw-bold">Protect Content</label>
+                <select name="protect" class="form-control mb-2">
+                    <option value="off" {% if config.PROTECT_CONTENT == 'off' %}selected{% endif %}>OFF</option>
+                    <option value="on" {% if config.PROTECT_CONTENT == 'on' %}selected{% endif %}>ON</option>
+                </select>
+                <label class="small fw-bold">Shortener URL & API Key</label>
+                <input name="s_url" class="form-control mb-1" placeholder="Shortener Domain" value="{{config.SHORTENER_URL}}">
+                <input name="s_api" class="form-control mb-2" placeholder="API Key" value="{{config.SHORTENER_API}}">
                 <button class="btn btn-dark w-100">Update Config</button>
             </form>
         </div>
@@ -528,7 +534,7 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Dashboard</title><link r
                 {% for m in movies %}
                 <tr><td>{{m.title}}</td><td>{{m.year}}</td><td>
                     <a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit/Files</a>
-                    <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger">Del</a>
+                    <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Del</a>
                 </td></tr>
                 {% endfor %}
             </table>
@@ -574,18 +580,22 @@ EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Movie</title><link rel="st
             <h5>➕ Add Quality Button (Unlimited)</h5>
             <form action="/admin/add_file" method="POST" class="mb-4">
                 <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
-                <input name="quality" class="form-control mb-2" placeholder="Quality (e.g. 720p Dual Audio)" required>
+                <input name="quality" class="form-control mb-2" placeholder="Quality (e.g. 720p Bangla)" required>
                 <input name="file_id" class="form-control mb-2" placeholder="Storage Message ID" required>
-                <button class="btn btn-info w-100">Add Quality Button</button>
+                <button class="btn btn-info w-100">Add Link</button>
             </form>
             <h6>Current Links:</h6>
             <ul class="list-group">
-                {% for f in m.files %}
-                <li class="list-group-item d-flex justify-content-between align-items-center">
-                    {{f.quality}} (ID: {{f.file_id}})
-                    <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">Del</a>
-                </li>
-                {% endfor %}
+                {% if m.files %}
+                    {% for f in m.files %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        {{f.quality}} (ID: {{f.file_id}})
+                        <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">Del</a>
+                    </li>
+                    {% endfor %}
+                {% else %}
+                    <li class="list-group-item text-muted small">No links added.</li>
+                {% endif %}
             </ul>
         </div>
         <div class="mt-3 text-center"><a href="/admin" class="btn btn-secondary">Back to Admin</a></div>
