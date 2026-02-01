@@ -61,21 +61,11 @@ def get_short_link(long_url):
     s_api = config.get('SHORTENER_API')
     if not s_url or not s_api: return long_url
     try:
-        api_endpoint = f"https://{s_url}?api={s_api}&url={urllib.parse.quote(long_url)}"
+        api_endpoint = f"https://{s_url}/api?api={s_api}&url={urllib.parse.quote(long_url)}"
         res = requests.get(api_endpoint).json()
         return res.get('shortenedUrl') or res.get('shortlink') or long_url
     except:
         return long_url
-
-def create_bot():
-    config = get_config()
-    token = config.get('BOT_TOKEN')
-    if token and len(token) > 20:
-        try:
-            return telebot.TeleBot(token, threaded=False)
-        except:
-            return None
-    return None
 
 def auto_delete_task(bot_inst, chat_id, msg_id, delay):
     if delay > 0:
@@ -103,22 +93,24 @@ def register_handlers(bot_inst):
                     sent_msg = bot_inst.copy_message(message.chat.id, int(config['STORAGE_CHANNEL_ID']), int(file_to_send), protect_content=protect)
                     delay = int(config.get('AUTO_DELETE_TIME', 0))
                     if delay > 0:
-                        bot_inst.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
+                        warn_msg = bot_inst.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
                         threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, sent_msg.message_id, delay)).start()
+                        threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, warn_msg.message_id, delay)).start()
                 except:
                     bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি।")
                 return
         bot_inst.reply_to(message, f"🎬 {config.get('SITE_NAME')} এ স্বাগতম! মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।")
 
+    # /cancel কমান্ড লজিক
     @bot_inst.message_handler(commands=['cancel'])
-    def cancel_action(message):
+    def cancel_process(message):
         uid = message.from_user.id
         if uid in admin_states:
             del admin_states[uid]
             bot_inst.clear_step_handler_by_chat_id(chat_id=message.chat.id)
-            bot_inst.reply_to(message, "❌ বর্তমান প্রসেসটি বাতিল করা হয়েছে। নতুন করে শুরু করতে /post ব্যবহার করুন।")
+            bot_inst.reply_to(message, "✅ বর্তমান আপলোড প্রসেসটি বাতিল করা হয়েছে।")
         else:
-            bot_inst.reply_to(message, "ℹ️ বর্তমানে কোনো প্রসেস রানিং নেই।")
+            bot_inst.reply_to(message, "ℹ️ কোনো প্রসেস বর্তমানে রানিং নেই।")
 
     @bot_inst.message_handler(commands=['stats'])
     def stats(message):
@@ -153,7 +145,7 @@ def register_handlers(bot_inst):
             return
         query = message.text.replace('/post', '').strip()
         if not query:
-            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। (উদা: /post Leo)")
+            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। (যেমন: /post Leo)")
             return
         
         tmdb_api = config.get('TMDB_API_KEY')
@@ -184,31 +176,31 @@ def register_handlers(bot_inst):
                 markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{m_id}_{l}"))
             bot_inst.edit_message_text("🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
         else:
-            msg = bot_inst.send_message(call.message.chat.id, "📺 সিজন নম্বর লিখুন:")
+            msg = bot_inst.send_message(call.message.chat.id, "📺 সিজন নম্বর লিখুন (বা /cancel):")
             bot_inst.register_next_step_handler(msg, get_season)
 
     def get_season(message):
+        if message.text == '/cancel': return cancel_process(message)
         uid = message.from_user.id
-        if message.text == '/cancel': return cancel_action(message)
         if uid in admin_states:
             admin_states[uid]['season'] = message.text
-            bot_inst.send_message(message.chat.id, "🔢 এপিসোড নম্বর লিখুন:")
-            bot_inst.register_next_step_handler(message, get_episode)
+            msg = bot_inst.send_message(message.chat.id, "🔢 এপিসোড নম্বর লিখুন:")
+            bot_inst.register_next_step_handler(msg, get_episode)
 
     def get_episode(message):
+        if message.text == '/cancel': return cancel_process(message)
         uid = message.from_user.id
-        if message.text == '/cancel': return cancel_action(message)
         if uid in admin_states:
             admin_states[uid]['episode'] = message.text
-            bot_inst.send_message(message.chat.id, "📥 কোয়ালিটি লিখুন (যেমন: 720p):")
-            bot_inst.register_next_step_handler(message, get_tv_quality)
+            msg = bot_inst.send_message(message.chat.id, "📥 কোয়ালিটি লিখুন (যেমন: 720p):")
+            bot_inst.register_next_step_handler(msg, get_tv_quality)
 
     def get_tv_quality(message):
+        if message.text == '/cancel': return cancel_process(message)
         uid = message.from_user.id
-        if message.text == '/cancel': return cancel_action(message)
         if uid in admin_states:
             admin_states[uid]['qual'] = message.text
-            bot_inst.send_message(message.chat.id, "📥 ভিডিও ফাইলটি পাঠান:")
+            bot_inst.send_message(message.chat.id, "📥 ভিডিও ফাইলটি পাঠান (বা /cancel):")
 
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('lang_m_'))
     def movie_qual(call):
@@ -223,15 +215,15 @@ def register_handlers(bot_inst):
         _, _, mid, lang, qual = call.data.split('_')
         if qual == "Custom":
             admin_states[call.from_user.id].update({'lang': lang})
-            msg = bot_inst.send_message(call.message.chat.id, "🖊️ কাস্টম কোয়ালিটি লিখুন:")
+            msg = bot_inst.send_message(call.message.chat.id, "🖊️ কাস্টম কোয়ালিটি লিখুন (বা /cancel):")
             bot_inst.register_next_step_handler(msg, get_custom_qual)
         else:
             admin_states[call.from_user.id].update({'lang': lang, 'qual': qual})
-            bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান: (বা /cancel)")
+            bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান (বা /cancel):")
 
     def get_custom_qual(message):
+        if message.text == '/cancel': return cancel_process(message)
         uid = message.from_user.id
-        if message.text == '/cancel': return cancel_action(message)
         if uid in admin_states:
             admin_states[uid]['qual'] = message.text
             bot_inst.send_message(message.chat.id, "📥 মুভি ফাইলটি এখানে পাঠান:")
@@ -303,12 +295,13 @@ def init_bot_service():
                 bot.remove_webhook()
                 time.sleep(1)
                 bot.set_webhook(url=webhook_url)
+                print(f"✅ Webhook Active: {webhook_url}")
             return bot
         except Exception as e:
             print(f"❌ Bot Initialization Failure: {e}")
     return None
 
-# --- [FLASK ROUTES] ---
+# ================== FLASK ROUTES ==================
 
 @app.route('/')
 def home():
@@ -363,6 +356,7 @@ def login():
             return redirect(url_for('admin'))
     return render_template_string(LOGIN_HTML)
 
+# Logout বাগ ফিক্স করা হয়েছে
 @app.route('/logout')
 def logout():
     session.clear()
@@ -382,8 +376,11 @@ def admin():
         return render_template_string(ADMIN_ADD_HTML, config=config, categories=CATEGORIES)
     elif tab == 'settings':
         return render_template_string(ADMIN_SETTINGS_HTML, config=config)
-    else: 
-        stats = {'users': users_col.count_documents({}), 'movies': movies_col.count_documents({})}
+    else: # dashboard
+        stats = {
+            'users': users_col.count_documents({}),
+            'movies': movies_col.count_documents({})
+        }
         return render_template_string(ADMIN_DASHBOARD_HTML, stats=stats, config=config)
 
 @app.route('/admin/search_tmdb', methods=['POST'])
@@ -535,16 +532,20 @@ COMMON_STYLE = """
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
     :root { --neon: #66fcf1; --dark: #0b0c10; --card: #1f2833; --text: #c5c6c7; }
     body { background: var(--dark); color: var(--text); font-family: 'Poppins', sans-serif; overflow-x: hidden; }
+    
     .neon-card { background: var(--card); border: 1px solid #45a29e; border-radius: 12px; transition: 0.5s; overflow: hidden; position: relative; }
     .neon-card:hover { transform: translateY(-8px); box-shadow: 0 0 20px var(--neon); border-color: var(--neon); }
     .btn-neon { background: var(--neon); color: var(--dark); font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.3s; display: inline-block; cursor:pointer;}
     .btn-neon:hover { background: #45a29e; color: #fff; box-shadow: 0 0 15px var(--neon); }
+    
     .cat-pill { padding: 6px 16px; border-radius: 20px; border: 1px solid var(--neon); color: var(--neon); text-decoration: none; margin: 4px; display: inline-block; font-size: 13px; transition: 0.3s; }
     .cat-pill.active, .cat-pill:hover { background: var(--neon); color: var(--dark); font-weight: bold; }
+    
     .sidebar { width: 260px; height: 100vh; background: #1f2833; position: fixed; top: 0; left: 0; padding: 20px 0; border-right: 2px solid var(--neon); z-index: 1000; }
     .sidebar-brand { text-align: center; padding: 0 20px 20px; border-bottom: 1px solid #45a29e; margin-bottom: 20px; }
     .sidebar a { padding: 12px 25px; text-decoration: none; font-size: 15px; color: #fff; display: flex; align-items: center; transition: 0.3s; }
     .sidebar a:hover, .sidebar a.active { background: var(--neon); color: var(--dark); font-weight: bold; }
+    
     .main-content { margin-left: 260px; padding: 30px; min-height: 100vh; }
     .admin-card { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 25px; }
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
@@ -647,8 +648,16 @@ ADMIN_DASHBOARD_HTML = f"<!DOCTYPE html><html><head><title>Admin Dashboard</titl
 <div class="main-content">
     <h3>Welcome, Administrator</h3><hr>
     <div class="row">
-        <div class="col-md-4"><div class="admin-card text-center bg-primary text-white"><h2>{{stats.users}}</h2><p>Total Bot Users</p></div></div>
-        <div class="col-md-4"><div class="admin-card text-center bg-success text-white"><h2>{{stats.movies}}</h2><p>Total Movies/TV</p></div></div>
+        <div class="col-md-4">
+            <div class="admin-card text-center bg-primary text-white">
+                <h2>{{stats.users}}</h2><p>Total Bot Users</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="admin-card text-center bg-success text-white">
+                <h2>{{stats.movies}}</h2><p>Total Movies/TV</p>
+            </div>
+        </div>
     </div>
 </div></body></html>"""
 
@@ -747,14 +756,15 @@ ADMIN_SETTINGS_HTML = f"<!DOCTYPE html><html><head><title>Settings</title><link 
             <div class="row">
                 <div class="col-md-6 mb-3"><label>Site Name</label><input name="site_name" class="form-control" value="{{config.SITE_NAME}}"></div>
                 <div class="col-md-6 mb-3"><label>Site Logo URL</label><input name="site_logo" class="form-control" value="{{config.SITE_LOGO}}"></div>
-                <div class="col-md-6 mb-3"><label>Site URL</label><input name="site_url" class="form-control" value="{{config.SITE_URL}}"></div>
+                <div class="col-md-6 mb-3"><label>Site URL (Without last /)</label><input name="site_url" class="form-control" value="{{config.SITE_URL}}"></div>
                 <div class="col-md-6 mb-3"><label>Telegram Bot Token</label><input name="token" class="form-control" value="{{config.BOT_TOKEN}}"></div>
                 <div class="col-md-6 mb-3"><label>TMDb API Key</label><input name="tmdb" class="form-control" value="{{config.TMDB_API_KEY}}"></div>
                 <div class="col-md-6 mb-3"><label>Admin Telegram ID</label><input name="admin_id" class="form-control" value="{{config.ADMIN_ID}}"></div>
                 <div class="col-md-6 mb-3"><label>Storage Channel ID</label><input name="channel_id" class="form-control" value="{{config.STORAGE_CHANNEL_ID}}"></div>
-                <div class="col-md-6 mb-3"><label>Shortener Domain</label><input name="s_url" class="form-control" value="{{config.SHORTENER_URL}}"></div>
+                <div class="col-md-6 mb-3"><label>Shortener Domain</label><input name="s_url" class="form-control" value="{{config.SHORTENER_URL}}" placeholder="api.gplinks.com"></div>
                 <div class="col-md-6 mb-3"><label>Shortener API Key</label><input name="s_api" class="form-control" value="{{config.SHORTENER_API}}"></div>
-                <div class="col-md-6 mb-3"><label>Auto Delete Time (Sec)</label><input name="delete_time" type="number" class="form-control" value="{{config.AUTO_DELETE_TIME}}"></div>
+                <div class="col-md-6 mb-3"><label>Auto Delete Time (Sec, 0 to disable)</label><input name="delete_time" type="number" class="form-control" value="{{config.AUTO_DELETE_TIME}}"></div>
+                <div class="col-md-6 mb-3"><label>Protect Content (on/off)</label><input name="protect" class="form-control" value="{{config.PROTECT_CONTENT}}"></div>
             </div>
             <button class="btn btn-primary w-100 mt-2">💾 Save Configuration</button>
         </form>
@@ -795,7 +805,10 @@ EDIT_HTML = f"<!DOCTYPE html><html><head><title>Edit Content</title><link rel='s
                 <h6>Current Links:</h6>
                 <ul class="list-group">
                     {% if m.files %}{% for f in m.files %}
-                    <li class="list-group-item d-flex justify-content-between">{{f.quality}} (ID: {{f.file_id}})<a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">X</a></li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        {{f.quality}} (ID: {{f.file_id}})
+                        <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">X</a>
+                    </li>
                     {% endfor %}{% else %}<li class="list-group-item text-muted">No links.</li>{% endif %}
                 </ul>
             </div>
