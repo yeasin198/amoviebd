@@ -35,7 +35,10 @@ admin_states = {}
 # --- [সহায়ক ফাংশনসমূহ] ---
 def get_config():
     """ডাটাবেস থেকে সেটিংস আনে, না থাকলে ডিফল্ট রিটার্ন করে"""
-    conf = config_col.find_one({'type': 'core_settings'}) or {}
+    try:
+        conf = config_col.find_one({'type': 'core_settings'}) or {}
+    except:
+        conf = {}
     defaults = {
         'SITE_URL': '', 'BOT_TOKEN': '', 'TMDB_API_KEY': '', 
         'ADMIN_ID': '', 'STORAGE_CHANNEL_ID': '',
@@ -49,7 +52,7 @@ def create_bot():
     """বট অবজেক্ট তৈরি করে"""
     config = get_config()
     token = config.get('BOT_TOKEN')
-    if token:
+    if token and len(token) > 20: # টোকেন ভ্যালিড কিনা চেক
         return telebot.TeleBot(token, threaded=False)
     return None
 
@@ -89,18 +92,20 @@ def register_handlers(bot):
 
             if file_to_send:
                 protect = True if config.get('PROTECT_CONTENT') == 'on' else False
-                sent_msg = bot.copy_message(
-                    message.chat.id, 
-                    int(config['STORAGE_CHANNEL_ID']), 
-                    int(file_to_send), 
-                    protect_content=protect
-                )
-                
-                # অটো ডিলিট লজিক
-                delay = int(config.get('AUTO_DELETE_TIME', 0))
-                if delay > 0:
-                    bot.send_message(message.chat.id, f"⚠️ এই ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
-                    threading.Thread(target=auto_delete_task, args=(bot, message.chat.id, sent_msg.message_id, delay)).start()
+                try:
+                    sent_msg = bot.copy_message(
+                        message.chat.id, 
+                        int(config['STORAGE_CHANNEL_ID']), 
+                        int(file_to_send), 
+                        protect_content=protect
+                    )
+                    
+                    delay = int(config.get('AUTO_DELETE_TIME', 0))
+                    if delay > 0:
+                        bot.send_message(message.chat.id, f"⚠️ এই ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
+                        threading.Thread(target=auto_delete_task, args=(bot, message.chat.id, sent_msg.message_id, delay)).start()
+                except:
+                    bot.send_message(message.chat.id, "❌ ফাইল পাঠাতে সমস্যা হয়েছে। স্টোরেজ চ্যানেল আইডি চেক করুন।")
                 return
             else:
                 bot.send_message(message.chat.id, "❌ দুঃখিত, ফাইলটি পাওয়া যায়নি।")
@@ -150,7 +155,6 @@ def register_handlers(bot):
                 markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{m_id}_{l}"))
             bot.edit_message_text("🌐 মুভির অডিও ল্যাঙ্গুয়েজ সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
         else:
-            # টিভি শো-র জন্য সিজন প্রম্পট
             admin_states[call.from_user.id] = {'type': 'tv', 'tmdb_id': m_id}
             msg = bot.edit_message_text("📺 সিজন নম্বর লিখুন (যেমন: 1):", call.message.chat.id, call.message.message_id)
             bot.register_next_step_handler(msg, get_season)
@@ -191,80 +195,83 @@ def register_handlers(bot):
         if uid not in admin_states: return
 
         state = admin_states[uid]
-        sent_msg = bot.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
-        tmdb_api = config['TMDB_API_KEY']
-        
-        # TMDB থেকে বিস্তারিত তথ্য সংগ্রহ (Credits ও Videos সহ)
-        tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
-        m = requests.get(tmdb_url).json()
-        
-        title = m.get('title') or m.get('name')
-        year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
-        cast = ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]])
-        director = next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A')
-        trailer_key = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
+        try:
+            sent_msg = bot.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
+            tmdb_api = config['TMDB_API_KEY']
+            
+            # TMDB থেকে বিস্তারিত তথ্য সংগ্রহ
+            tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
+            m = requests.get(tmdb_url).json()
+            
+            title = m.get('title') or m.get('name')
+            year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
+            cast = ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]])
+            director = next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A')
+            trailer_key = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
 
-        movie_info = {
-            'tmdb_id': str(state['tmdb_id']), 'type': state['type'], 'title': title, 'year': year,
-            'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
-            'rating': str(round(m.get('vote_average', 0), 1)), 'story': m.get('overview', 'N/A'),
-            'cast': cast, 'director': director,
-            'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else ""
-        }
-
-        if state['type'] == 'movie':
-            movie_info.update({'file_id': sent_msg.message_id, 'lang': state['lang'], 'quality': state['qual']})
-            movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
-        else:
-            # টিভি শো এর মেইন তথ্য সেভ
-            movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
-            # এপিসোড আলাদাভাবে সেভ
-            ep_data = {
-                'tmdb_id': str(state['tmdb_id']), 'season': int(state['season']), 
-                'episode': int(state['episode']), 'file_id': sent_msg.message_id
+            # ফিক্সড ট্রেলার লাইন
+            movie_info = {
+                'tmdb_id': str(state['tmdb_id']), 'type': state['type'], 'title': title, 'year': year,
+                'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
+                'rating': str(round(m.get('vote_average', 0), 1)), 'story': m.get('overview', 'N/A'),
+                'cast': cast, 'director': director,
+                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else ""
             }
-            episodes_col.update_one(
-                {'tmdb_id': ep_data['tmdb_id'], 'season': ep_data['season'], 'episode': ep_data['episode']},
-                {'$set': ep_data}, upsert=True
-            )
-        
-        bot.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}")
-        del admin_states[uid]
+
+            if state['type'] == 'movie':
+                movie_info.update({'file_id': sent_msg.message_id, 'lang': state['lang'], 'quality': state['qual']})
+                movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
+            else:
+                movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
+                episodes_col.update_one(
+                    {'tmdb_id': str(state['tmdb_id']), 'season': int(state['season']), 'episode': int(state['episode'])},
+                    {'$set': {'file_id': sent_msg.message_id}}, upsert=True
+                )
+            bot.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}")
+            del admin_states[uid]
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ এরর: {e}")
 
 # --- [FLASK WEB ROUTES & UI] ---
 
 @app.route('/')
 def home():
-    q = request.args.get('search')
-    if q:
-        movies = list(movies_col.find({"$or": [{"title": {"$regex": q, "$options": "i"}}, {"year": q}]}).sort('_id', -1))
-    else:
-        movies = list(movies_col.find().sort('_id', -1))
-    return render_template_string(HOME_HTML, movies=movies, query=q)
+    try:
+        q = request.args.get('search')
+        if q:
+            movies = list(movies_col.find({"$or": [{"title": {"$regex": q, "$options": "i"}}, {"year": q}]}).sort('_id', -1))
+        else:
+            movies = list(movies_col.find().sort('_id', -1))
+        return render_template_string(HOME_HTML, movies=movies, query=q)
+    except Exception as e:
+        return f"Database Error: {e}. Please visit /login to configure settings.", 500
 
 @app.route('/movie/<tmdb_id>')
 def movie_details(tmdb_id):
-    movie = movies_col.find_one({'tmdb_id': tmdb_id})
-    if not movie: return "Content Not Found", 404
-    
-    config = get_config()
-    bot_user = ""
     try:
-        bot_user = telebot.TeleBot(config['BOT_TOKEN']).get_me().username
-    except: pass
+        movie = movies_col.find_one({'tmdb_id': tmdb_id})
+        if not movie: return "Content Not Found", 404
+        
+        config = get_config()
+        bot_user = ""
+        if config.get('BOT_TOKEN'):
+            try:
+                temp_bot = telebot.TeleBot(config['BOT_TOKEN'])
+                bot_user = temp_bot.get_me().username
+            except: pass
 
-    # টিভি শো এর জন্য সিজন-এপিসোড বিন্যাস
-    seasons_data = {}
-    if movie['type'] == 'tv':
-        eps = list(episodes_col.find({'tmdb_id': tmdb_id}).sort([('season', 1), ('episode', 1)]))
-        for e in eps:
-            s_num = e['season']
-            if s_num not in seasons_data: seasons_data[s_num] = []
-            seasons_data[s_num].append(e)
+        seasons_data = {}
+        if movie['type'] == 'tv':
+            eps = list(episodes_col.find({'tmdb_id': tmdb_id}).sort([('season', 1), ('episode', 1)]))
+            for e in eps:
+                s_num = e['season']
+                if s_num not in seasons_data: seasons_data[s_num] = []
+                seasons_data[s_num].append(e)
 
-    return render_template_string(DETAILS_HTML, m=movie, seasons=seasons_data, bot_user=bot_user)
+        return render_template_string(DETAILS_HTML, m=movie, seasons=seasons_data, bot_user=bot_user)
+    except Exception as e:
+        return f"Internal Error: {e}", 500
 
-# অ্যাডমিন প্যানেল লগইন
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -312,7 +319,6 @@ def save_config():
         'PROTECT_CONTENT': request.form.get('protect')
     }
     config_col.update_one({'type': 'core_settings'}, {'$set': data}, upsert=True)
-    # ওয়েব হুক অটো সেটআপ
     try:
         bot = telebot.TeleBot(data['BOT_TOKEN'])
         bot.remove_webhook()
@@ -346,8 +352,6 @@ COMMON_STYLE = """
     body { background: #0b0c10; color: #c5c6c7; font-family: 'Poppins', sans-serif; }
     .navbar { background: #1f2833; border-bottom: 2px solid #66fcf1; }
     .btn-custom { background: #66fcf1; color: #0b0c10; font-weight: 600; border-radius: 30px; }
-    
-    /* গ্লোয়িং বর্ডার ইফেক্ট */
     .movie-card {
         background: #1f2833; border-radius: 15px; overflow: hidden; position: relative;
         transition: 0.4s; cursor: pointer; border: 1px solid transparent;
@@ -365,7 +369,6 @@ COMMON_STYLE = """
     .movie-card:hover::before { opacity: 1; }
     @keyframes rotate { 100% { transform: rotate(360deg); } }
     .card-inner { position: relative; background: #1f2833; margin: 2px; border-radius: 13px; z-index: 2; height: calc(100% - 4px); }
-    
     .poster-img { height: 280px; width: 100%; object-fit: cover; border-radius: 13px 13px 0 0; }
     .badge-type { position: absolute; top: 10px; left: 10px; background: #66fcf1; color: #0b0c10; font-weight: bold; padding: 2px 8px; border-radius: 5px; z-index: 10; font-size: 0.7rem; }
     .season-box { background: #1f2833; border-radius: 10px; padding: 15px; margin-bottom: 15px; border-left: 5px solid #66fcf1; }
@@ -463,6 +466,5 @@ LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="styles
 
 # ================== মেইন রানার ==================
 if __name__ == '__main__':
-    # পোর্ট বাইন্ডিং
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
