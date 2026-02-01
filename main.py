@@ -34,6 +34,9 @@ ADMIN_PASSWORD = "password123"
 admin_states = {}
 bot = None
 
+# মুভির ক্যাটাগরি লিস্ট
+CATEGORIES = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Drama", "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller", "South Hindi", "Bangla Dubbed", "Web Series"]
+
 # --- [সহায়ক ফাংশনসমূহ] ---
 def get_config():
     try:
@@ -161,13 +164,23 @@ def register_handlers(bot_inst):
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
     def handle_selection(call):
         _, m_type, m_id = call.data.split('_')
+        # ক্যাটাগরি নির্বাচনের ধাপ যুক্ত করা হয়েছে
+        markup = types.InlineKeyboardMarkup()
+        for cat in CATEGORIES:
+            markup.add(types.InlineKeyboardButton(text=cat, callback_data=f"cat_{m_type}_{m_id}_{cat}"))
+        bot_inst.edit_message_text("📂 মুভির ক্যাটাগরি সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('cat_'))
+    def handle_category_selection(call):
+        _, m_type, m_id, cat = call.data.split('_')
+        admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id, 'category': cat}
+        
         if m_type == 'movie':
             markup = types.InlineKeyboardMarkup()
             for l in ["Bangla", "Hindi", "English", "Multi"]:
                 markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{m_id}_{l}"))
             bot_inst.edit_message_text("🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
         else:
-            admin_states[call.from_user.id] = {'type': 'tv', 'tmdb_id': m_id}
             msg = bot_inst.send_message(call.message.chat.id, "📺 সিজন নম্বর লিখুন:")
             bot_inst.register_next_step_handler(msg, get_season)
 
@@ -203,11 +216,11 @@ def register_handlers(bot_inst):
     def movie_file_ask(call):
         _, _, mid, lang, qual = call.data.split('_')
         if qual == "Custom":
-            admin_states[call.from_user.id] = {'type': 'movie', 'tmdb_id': mid, 'lang': lang}
+            admin_states[call.from_user.id].update({'lang': lang})
             msg = bot_inst.send_message(call.message.chat.id, "🖊️ কাস্টম কোয়ালিটি লিখুন:")
             bot_inst.register_next_step_handler(msg, get_custom_qual)
         else:
-            admin_states[call.from_user.id] = {'type': 'movie', 'tmdb_id': mid, 'lang': lang, 'qual': qual}
+            admin_states[call.from_user.id].update({'lang': lang, 'qual': qual})
             bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান:")
 
     def get_custom_qual(message):
@@ -238,7 +251,8 @@ def register_handlers(bot_inst):
                 'tmdb_id': str(state['tmdb_id']), 'type': state['type'], 'title': title, 'year': year,
                 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
                 'rating': str(round(m.get('vote_average', 0), 1)), 'story': m.get('overview', 'N/A'),
-                'cast': cast, 'director': director, 'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else "",
+                'cast': cast, 'director': director, 'category': state.get('category', 'Action'),
+                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else "",
                 'lang': state.get('lang', 'N/A'), 'quality': state.get('qual', 'HD')
             }
             movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
@@ -285,17 +299,19 @@ def init_bot_service():
 @app.route('/')
 def home():
     q = request.args.get('search')
+    cat = request.args.get('cat') # ক্যাটাগরি ফিল্টার
     page = int(request.args.get('page', 1))
     limit = 24 
     skip = (page - 1) * limit
-    if q:
-        total = movies_col.count_documents({"title": {"$regex": q, "$options": "i"}})
-        movies = list(movies_col.find({"title": {"$regex": q, "$options": "i"}}).sort('_id', -1).skip(skip).limit(limit))
-    else:
-        total = movies_col.count_documents({})
-        movies = list(movies_col.find().sort('_id', -1).skip(skip).limit(limit))
+    
+    query_filter = {}
+    if q: query_filter["title"] = {"$regex": q, "$options": "i"}
+    if cat: query_filter["category"] = cat
+
+    total = movies_col.count_documents(query_filter)
+    movies = list(movies_col.find(query_filter).sort('_id', -1).skip(skip).limit(limit))
     pages = math.ceil(total / limit)
-    return render_template_string(HOME_HTML, movies=movies, query=q, page=page, pages=pages)
+    return render_template_string(HOME_HTML, movies=movies, query=q, cat=cat, page=page, pages=pages, categories=CATEGORIES)
 
 @app.route('/movie/<tmdb_id>')
 def movie_details(tmdb_id):
@@ -303,9 +319,9 @@ def movie_details(tmdb_id):
     if not movie: return "Not Found", 404
     config = get_config()
     bot_user = ""
-    if bot:
-        try: bot_user = bot.get_me().username
-        except: pass
+    try:
+        if bot: bot_user = bot.get_me().username
+    except: pass
 
     if 'files' in movie:
         for f in movie['files']:
@@ -340,7 +356,7 @@ def admin():
         movies = list(movies_col.find({"title": {"$regex": q, "$options": "i"}}).sort('_id', -1))
     else:
         movies = list(movies_col.find().sort('_id', -1))
-    return render_template_string(ADMIN_HTML, config=get_config(), movies=movies, q=q)
+    return render_template_string(ADMIN_HTML, config=get_config(), movies=movies, q=q, categories=CATEGORIES)
 
 # TMDb Search এর জন্য
 @app.route('/admin/search_tmdb', methods=['POST'])
@@ -405,6 +421,7 @@ def manual_add():
         'year': request.form.get('year'), 'poster': request.form.get('poster'),
         'rating': request.form.get('rating'), 'story': request.form.get('story'),
         'director': request.form.get('director'), 'cast': request.form.get('cast'),
+        'category': request.form.get('category'), # ক্যাটাগরি
         'trailer': request.form.get('trailer')
     }
     movies_col.update_one({'tmdb_id': tid}, {'$set': movie_info}, upsert=True)
@@ -422,7 +439,7 @@ def add_file():
 def edit_movie(tmdb_id):
     if not session.get('logged_in'): return redirect(url_for('login'))
     movie = movies_col.find_one({'tmdb_id': tmdb_id})
-    return render_template_string(EDIT_HTML, m=movie)
+    return render_template_string(EDIT_HTML, m=movie, categories=CATEGORIES)
 
 @app.route('/admin/update', methods=['POST'])
 def update_movie():
@@ -431,6 +448,7 @@ def update_movie():
     data = {
         'title': request.form.get('title'), 'year': request.form.get('year'),
         'rating': request.form.get('rating'), 'poster': request.form.get('poster'),
+        'category': request.form.get('category'),
         'trailer': request.form.get('trailer'), 'director': request.form.get('director'),
         'cast': request.form.get('cast'), 'story': request.form.get('story')
     }
@@ -482,17 +500,43 @@ def webhook():
 COMMON_STYLE = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
-    body { background: #0b0c10; color: #c5c6c7; font-family: 'Poppins', sans-serif; }
-    .neon-card { background: #1f2833; border: 1px solid #45a29e; border-radius: 12px; transition: 0.3s; overflow: hidden; }
-    .neon-card:hover { transform: translateY(-5px); box-shadow: 0 0 15px #66fcf1; border-color: #66fcf1; }
-    .btn-neon { background: #66fcf1; color: #0b0c10; font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.2s; }
-    .btn-neon:hover { background: #45a29e; color: #fff; }
+    body { background: #0b0c10; color: #c5c6c7; font-family: 'Poppins', sans-serif; overflow-x: hidden; }
+    
+    /* Neon Glow & Lighting Effect for Poster Card */
+    .neon-card { 
+        background: #1f2833; 
+        border: 1px solid #45a29e; 
+        border-radius: 12px; 
+        transition: 0.5s; 
+        overflow: hidden; 
+        position: relative;
+        box-shadow: 0 0 5px rgba(102, 252, 241, 0.2);
+    }
+    .neon-card:hover { 
+        transform: translateY(-8px); 
+        box-shadow: 0 0 20px #66fcf1; 
+        border-color: #66fcf1; 
+    }
+    .neon-card::before {
+        content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+        background: conic-gradient(transparent, transparent, transparent, #66fcf1);
+        animation: rotate-neon 4s linear infinite; z-index: 1; opacity: 0; transition: 0.5s;
+    }
+    .neon-card:hover::before { opacity: 1; }
+    @keyframes rotate-neon { 100% { transform: rotate(360deg); } }
+    
+    .card-inner { position: relative; z-index: 2; background: #1f2833; margin: 3px; border-radius: 10px; }
+    
+    .btn-neon { background: #66fcf1; color: #0b0c10; font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.3s; display: inline-block; }
+    .btn-neon:hover { background: #45a29e; color: #fff; box-shadow: 0 0 15px #66fcf1; }
+    
+    .cat-pill { padding: 6px 16px; border-radius: 20px; border: 1px solid #66fcf1; color: #66fcf1; text-decoration: none; margin: 4px; display: inline-block; font-size: 13px; transition: 0.3s; }
+    .cat-pill.active, .cat-pill:hover { background: #66fcf1; color: #0b0c10; font-weight: bold; }
+    
     .navbar { background: #1f2833; border-bottom: 2px solid #66fcf1; }
-    .poster-img { height: 260px; width: 100%; object-fit: cover; }
+    .poster-img { height: 260px; width: 100%; object-fit: cover; border-radius: 10px 10px 0 0; }
     .admin-box { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 20px; }
-    .search-results { position: absolute; background: white; width: 93%; z-index: 100; max-height: 250px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-    .search-item { padding: 10px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 14px; }
-    .search-item:hover { background: #f8f9fa; }
+    .search-results { position: absolute; background: white; width: 93%; z-index: 100; max-height: 250px; overflow-y: auto; border: 1px solid #ddd; }
 </style>
 """
 
@@ -504,14 +548,22 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
         <button class="btn btn-outline-info" type="submit">🔍</button>
     </form>
 </div></nav>
+<div class="container mb-4 text-center">
+    <a href="/" class="cat-pill {% if not cat %}active{% endif %}">All</a>
+    {% for c in categories %}
+    <a href="/?cat={{c}}" class="cat-pill {% if cat == c %}active{% endif %}">{{c}}</a>
+    {% endfor %}
+</div>
 <div class="container"><div class="row row-cols-2 row-cols-md-4 row-cols-lg-6 g-3">
 {% for m in movies %}
 <div class="col"><a href="/movie/{{m.tmdb_id}}" style="text-decoration:none; color:inherit;">
-    <div class="neon-card h-100">
-        <img src="{{m.poster}}" class="poster-img" loading="lazy">
-        <div class="p-2 text-center">
-            <div class="small fw-bold text-truncate">{{m.title}}</div>
-            <div class="text-info small">⭐ {{m.rating}} | {{m.year}}</div>
+    <div class="neon-card">
+        <div class="card-inner">
+            <img src="{{m.poster}}" class="poster-img" loading="lazy">
+            <div class="p-2 text-center">
+                <div class="small fw-bold text-truncate">{{m.title}}</div>
+                <div class="text-info small">⭐ {{m.rating}} | {{m.year}}</div>
+            </div>
         </div>
     </div>
 </a></div>
@@ -519,7 +571,7 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
 </div>
 <nav class="mt-4"><ul class="pagination justify-content-center">
     {% for p in range(1, pages + 1) %}
-    <li class="page-item {% if p == page %}active{% endif %}"><a class="page-link" href="/?page={{p}}{% if query %}&search={{query}}{% endif %}">{{p}}</a></li>
+    <li class="page-item {% if p == page %}active{% endif %}"><a class="page-link" href="/?page={{p}}{% if query %}&search={{query}}{% endif %}{% if cat %}&cat={{cat}}{% endif %}">{{p}}</a></li>
     {% endfor %}
 </ul></nav>
 </div></body></html>"""
@@ -535,7 +587,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
         <div class="col-md-4 mb-4"><img src="{{m.poster}}" class="w-100 rounded border border-info shadow-lg"></div>
         <div class="col-md-8">
             <h1 class="text-white">{{m.title}} ({{m.year}})</h1>
-            <p class="text-info fw-bold">⭐ Rating: {{m.rating}} / 10</p>
+            <p class="text-info fw-bold">⭐ Rating: {{m.rating}} / 10 | 📂 Category: {{m.category}}</p>
             <p><b>Director:</b> {{m.director}} | <b>Cast:</b> {{m.cast}}</p>
             <p><b>Story:</b><br>{{m.story}}</p>
             <hr class="border-secondary">
@@ -553,7 +605,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
                 <div class="p-3 border border-info rounded mb-3">
                     <h6 class="text-info">Season {{s}}</h6>
                     {% for ep in eps %}
-                    <div class="mb-2">Ep {{ep.episode}}: 
+                    <div class="mb-2 text-white">Ep {{ep.episode}}: 
                         {% if ep.files %}
                             {% for f in ep.files %}<a href="{{f.short_url}}" class="btn btn-sm btn-outline-info ms-1">{{f.quality}}</a>{% endfor %}
                         {% else %}
@@ -593,6 +645,11 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
                     <option value="movie">Movie</option>
                     <option value="tv">TV Series</option>
                 </select>
+                <select name="category" class="form-control mb-2">
+                    {% for cat in categories %}
+                    <option value="{{cat}}">{{cat}}</option>
+                    {% endfor %}
+                </select>
                 <input id="f_year" name="year" class="form-control mb-2" placeholder="Year">
                 <input id="f_rating" name="rating" class="form-control mb-2" placeholder="Rating">
                 <input id="f_poster" name="poster" class="form-control mb-2" placeholder="Poster URL">
@@ -623,9 +680,9 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
         <div class="admin-box">
             <form class="d-flex mb-3"><input name="q" class="form-control me-2" placeholder="Search..." value="{{q or ''}}"><button class="btn btn-info">Search</button></form>
             <table class="table table-sm">
-                <thead><tr><th>Title</th><th>Action</th></tr></thead>
+                <thead><tr><th>Title</th><th>Category</th><th>Action</th></tr></thead>
                 {% for m in movies %}
-                <tr><td>{{m.title}} ({{m.year}})</td><td>
+                <tr><td>{{m.title}}</td><td>{{m.category}}</td><td>
                     <a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit</a>
                     <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Del</a>
                 </td></tr>
@@ -691,9 +748,16 @@ EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Movie</title><link rel="st
             <form action="/admin/update" method="POST">
                 <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
                 <label>Title</label><input name="title" class="form-control mb-2" value="{{m.title}}">
+                <label>Category</label>
+                <select name="category" class="form-control mb-2">
+                    {% for cat in categories %}
+                    <option value="{{cat}}" {% if m.category == cat %}selected{% endif %}>{{cat}}</option>
+                    {% endfor %}
+                </select>
                 <label>Year</label><input name="year" class="form-control mb-2" value="{{m.year}}">
                 <label>Rating</label><input name="rating" class="form-control mb-2" value="{{m.rating}}">
-                <label>Poster</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
+                <label>Poster URL</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
+                <label>Trailer URL</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
                 <label>Storyline</label><textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea>
                 <button class="btn btn-success w-100">Update Metadata</button>
             </form>
@@ -732,11 +796,10 @@ LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="styles
     <form method="POST"><input name="u" class="form-control mb-2" placeholder="User"><input name="p" type="password" class="form-control mb-3" placeholder="Pass"><button class="btn btn-primary w-100">Login</button></form>
 </div></body></html>"""
 
-# ================== রান করার অংশ (শুধুমাত্র এখানে পরিবর্তন) ==================
+# ================== রান করার অংশ ==================
 
 if __name__ == '__main__':
     # রেন্ডারে পোর্ট বাইন্ডিং ফেইল ঠেকাতে বট সার্ভিসকে আলাদা থ্রেডে চালু করছি
-    # যাতে Flask সাথে সাথে তার পোর্ট (10000/5000) বিজি করতে পারে।
     threading.Thread(target=init_bot_service, daemon=True).start()
     
     port = int(os.environ.get('PORT', 5000))
