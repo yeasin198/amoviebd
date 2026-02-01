@@ -15,7 +15,7 @@ from flask import Flask, render_template_string, redirect, url_for, request, ses
 MONGO_URI = os.environ.get('MONGO_URI', "YOUR_MONGODB_URI_HERE") 
 
 try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    client = MongoClient(MONGO_URI)
     db = client['movie_portal_db']
     config_col = db['bot_config']      
     movies_col = db['movies_data']      
@@ -61,6 +61,16 @@ def get_short_link(long_url):
         return res.get('shortenedUrl') or res.get('shortlink') or long_url
     except:
         return long_url
+
+def create_bot():
+    config = get_config()
+    token = config.get('BOT_TOKEN')
+    if token and len(token) > 20:
+        try:
+            return telebot.TeleBot(token, threaded=False)
+        except:
+            return None
+    return None
 
 def auto_delete_task(bot_inst, chat_id, msg_id, delay):
     if delay > 0:
@@ -249,7 +259,7 @@ def register_handlers(bot_inst):
         except Exception as e:
             bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
 
-# --- [বট সার্ভিস - রেন্ডারের জন্য থ্রেডিং সহ] ---
+# --- [বট ইনিট ফাংশন] ---
 def init_bot_service():
     global bot
     config = get_config()
@@ -270,7 +280,7 @@ def init_bot_service():
             print(f"❌ Bot Initialization Failure: {e}")
     return None
 
-# --- [FLASK ROUTES - আপনার অরিজিনাল কোডের সব রাউট] ---
+# --- [FLASK ROUTES] ---
 
 @app.route('/')
 def home():
@@ -293,9 +303,9 @@ def movie_details(tmdb_id):
     if not movie: return "Not Found", 404
     config = get_config()
     bot_user = ""
-    try:
-        if bot: bot_user = bot.get_me().username
-    except: pass
+    if bot:
+        try: bot_user = bot.get_me().username
+        except: pass
 
     if 'files' in movie:
         for f in movie['files']:
@@ -332,12 +342,14 @@ def admin():
         movies = list(movies_col.find().sort('_id', -1))
     return render_template_string(ADMIN_HTML, config=get_config(), movies=movies, q=q)
 
+# TMDb Search এর জন্য
 @app.route('/admin/search_tmdb', methods=['POST'])
 def search_tmdb():
     if not session.get('logged_in'): return jsonify({'error': 'Unauthorized'})
     query = request.form.get('query')
     tmdb_key = get_config().get('TMDB_API_KEY')
     if not tmdb_key: return jsonify({'error': 'TMDB Key missing'})
+    
     url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={query}"
     try:
         res = requests.get(url).json().get('results', [])
@@ -351,10 +363,12 @@ def fetch_info():
     url = request.form.get('url')
     tmdb_key = get_config().get('TMDB_API_KEY')
     if not tmdb_key: return jsonify({'error': 'TMDB Key missing'})
+
     tmdb_id, media_type = None, "movie"
     imdb_match = re.search(r'tt\d+', url)
     tmdb_match = re.search(r'tmdb.org/(movie|tv)/(\d+)', url)
     only_id_match = re.match(r'^\d+$', url)
+
     try:
         if imdb_match:
             imdb_id = imdb_match.group(0)
@@ -366,9 +380,12 @@ def fetch_info():
         elif only_id_match:
             tmdb_id = url
             media_type = request.form.get('type', 'movie')
+
         if not tmdb_id: return jsonify({'error': 'ID not found'})
+
         m = requests.get(f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={tmdb_key}&append_to_response=credits,videos").json()
         trailer = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
+        
         return jsonify({
             'tmdb_id': str(tmdb_id), 'type': media_type, 'title': m.get('title') or m.get('name'),
             'year': (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4],
@@ -442,7 +459,7 @@ def save_config():
         'PROTECT_CONTENT': request.form.get('protect')
     }
     config_col.update_one({'type': 'core_settings'}, {'$set': data}, upsert=True)
-    # বটের কনফিগারেশন চেঞ্জ হলে থ্রেডে রিস্টার্ট হবে
+    # রিস্টার্ট এর ক্ষেত্রেও থ্রেড ব্যবহার করছি রেন্ডারের জন্য
     threading.Thread(target=init_bot_service).start()
     return redirect(url_for('admin'))
 
@@ -460,7 +477,7 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates (আপনার দেওয়া স্টাইল হুবহু) ==================
+# ================== HTML Templates ==================
 
 COMMON_STYLE = """
 <style>
@@ -593,8 +610,11 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
                 <input name="site_url" class="form-control mb-2" value="{{config.SITE_URL}}" placeholder="Site URL">
                 <input name="token" class="form-control mb-2" value="{{config.BOT_TOKEN}}" placeholder="Bot Token">
                 <input name="tmdb" class="form-control mb-2" value="{{config.TMDB_API_KEY}}" placeholder="TMDB API Key">
-                <input name="admin_id" class="form-control mb-2" value="{{config.ADMIN_ID}}" placeholder="Admin Telegram ID">
+                <input name="admin_id" class="form-control mb-2" value="{{config.ADMIN_ID}}" placeholder="Admin ID">
                 <input name="channel_id" class="form-control mb-2" value="{{config.STORAGE_CHANNEL_ID}}" placeholder="Storage Channel ID">
+                <input name="s_url" class="form-control mb-2" value="{{config.SHORTENER_URL}}" placeholder="Shortener URL">
+                <input name="s_api" class="form-control mb-2" value="{{config.SHORTENER_API}}" placeholder="Shortener API">
+                <input name="delete_time" type="number" class="form-control mb-2" value="{{config.AUTO_DELETE_TIME}}" placeholder="Auto Delete (Seconds)">
                 <button class="btn btn-dark w-100">Update Config</button>
             </form>
         </div>
@@ -653,6 +673,7 @@ function fetchData() {
         alert('Data Loaded!');
     });
 }
+
 $(document).mouseup(function(e) {
     var container = $("#search_results_box");
     if (!container.is(e.target) && container.has(e.target).length === 0) {
@@ -711,10 +732,11 @@ LOGIN_HTML = """<!DOCTYPE html><html><head><title>Login</title><link rel="styles
     <form method="POST"><input name="u" class="form-control mb-2" placeholder="User"><input name="p" type="password" class="form-control mb-3" placeholder="Pass"><button class="btn btn-primary w-100">Login</button></form>
 </div></body></html>"""
 
-# ================== রান করার অংশ ==================
+# ================== রান করার অংশ (শুধুমাত্র এখানে পরিবর্তন) ==================
 
 if __name__ == '__main__':
-    # ফ্লাস্ক চালু হওয়ার আগেই বট সার্ভিস থ্রেডে চালু হবে যাতে পোর্ট বাইন্ডিং না আটকায়
+    # রেন্ডারে পোর্ট বাইন্ডিং ফেইল ঠেকাতে বট সার্ভিসকে আলাদা থ্রেডে চালু করছি
+    # যাতে Flask সাথে সাথে তার পোর্ট (10000/5000) বিজি করতে পারে।
     threading.Thread(target=init_bot_service, daemon=True).start()
     
     port = int(os.environ.get('PORT', 5000))
