@@ -11,6 +11,19 @@ from pymongo import MongoClient
 from bson import ObjectId
 from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
 
+import telebot
+import requests
+import os
+import time
+import threading
+import urllib.parse
+import re
+import math
+from telebot import types
+from pymongo import MongoClient
+from bson import ObjectId
+from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
+
 # ================== ডাটাবেস সেটআপ ==================
 MONGO_URI = os.environ.get('MONGO_URI', "YOUR_MONGODB_URI_HERE") 
 
@@ -74,7 +87,7 @@ def auto_delete_task(bot_inst, chat_id, msg_id, delay):
             bot_inst.delete_message(chat_id, msg_id)
         except: pass
 
-# --- [টেলিগ্রাম বট হ্যান্ডলার - SINGLE MERGED FUNCTION] ---
+# --- [টেলিগ্রাম বট হ্যান্ডলার - সকল ফাংশন মার্জ করা হয়েছে] ---
 def register_handlers(bot_inst):
     if not bot_inst: return
 
@@ -95,11 +108,11 @@ def register_handlers(bot_inst):
             
         config = get_config()
 
-        # ডিপ লিঙ্কিং লজিক (আর্গুমেন্ট থাকলে)
+        # ডিপ লিঙ্কিং লজিক (আর্গুমেন্ট চেক)
         if len(message.text.split()) > 1:
             cmd_data = message.text.split()[1]
             
-            # এডমিন মুভি সিলেক্ট করলে
+            # এডমিন কর্তৃক মুভি সিলেক্ট করা (শুধুমাত্র এডমিনের জন্য)
             if cmd_data.startswith('sel_'):
                 if str(uid) != str(config.get('ADMIN_ID')):
                     bot_inst.reply_to(message, "🚫 আপনি এডমিন নন।")
@@ -116,16 +129,15 @@ def register_handlers(bot_inst):
                         bot_inst.register_next_step_handler(msg, get_season)
                 return
 
-            # ফাইল ডাউনলোড লজিক (সবার জন্য কাজ করবে)
+            # ফাইল ডাউনলোড লজিক (এটি সবার জন্য কাজ করবে)
             if cmd_data.startswith('dl_'):
                 file_to_send = cmd_data.replace('dl_', '')
-                protect = True if config.get('PROTECT_CONTENT') == 'on' else False
                 storage_id = config.get('STORAGE_CHANNEL_ID')
-                
                 if not storage_id:
                     bot_inst.send_message(message.chat.id, "❌ স্টোরেজ চ্যানেল কনফিগার করা নেই।")
                     return
 
+                protect = True if config.get('PROTECT_CONTENT') == 'on' else False
                 try:
                     sent_msg = bot_inst.copy_message(message.chat.id, int(storage_id), int(file_to_send), protect_content=protect)
                     delay = int(config.get('AUTO_DELETE_TIME', 0))
@@ -134,15 +146,17 @@ def register_handlers(bot_inst):
                         threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, sent_msg.message_id, delay)).start()
                         threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, warn_msg.message_id, delay)).start()
                 except Exception as e:
-                    bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি বা বটের স্টোরেজ এক্সেস নেই।")
+                    bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি বা স্টোরেজ চ্যানেল এক্সেস এরর।")
                 return
 
-        # সাধারণ স্বাগতম মেসেজ এবং প্রিমিয়াম প্রোফাইল কার্ড
+        # সাধারণ স্টার্ট মেসেজ ও প্রোফাইল কার্ড (সবার জন্য)
         welcome_text = (
             f"🎬 *{config.get('SITE_NAME')}* এ আপনাকে স্বাগতম!\n\n"
             f"👤 *আপনার প্রোফাইল তথ্য:*\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"📝 *Full Name:* {full_name}\n"
+            f"📝 *First Name:* {first_name}\n"
+            f"📝 *Last Name:* {last_name if last_name else 'N/A'}\n"
+            f"📛 *Full Name:* {full_name}\n"
             f"🆔 *User ID:* `{uid}`\n"
             f"🌐 *Username:* {username}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -217,9 +231,8 @@ def register_handlers(bot_inst):
         
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔍 মুভি সিলেক্ট করুন (লিঙ্ক)", url=selection_url))
-        bot_inst.send_message(message.chat.id, f"🔎 '{query}' এর জন্য রেজাল্ট দেখতে এবং সিলেক্ট করতে নিচের বাটনে ক্লিক করুন।", reply_markup=markup)
+        bot_inst.send_message(message.chat.id, f"🔎 '{query}' এর জন্য রেজাল্ট দেখতে নিচের বাটনে ক্লিক করুন।", reply_markup=markup)
 
-    # --- এডমিন ফাংশন হেল্পার ---
     def ask_movie_lang(message, mid):
         markup = types.InlineKeyboardMarkup()
         for l in ["Bangla", "Hindi", "English", "Multi"]:
@@ -313,18 +326,14 @@ def register_handlers(bot_inst):
         if uid not in admin_states: return
         config = get_config()
         state = admin_states[uid]
-        
         if not state['temp_files']:
             bot_inst.answer_callback_query(call.id, "⚠️ কোনো ফাইল পাঠানো হয়নি!")
             return
-
         bot_inst.send_message(call.message.chat.id, "⌛ ডাটাবেসে সেভ হচ্ছে, অপেক্ষা করুন...")
-        
         try:
             tmdb_api = config['TMDB_API_KEY']
             tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
             m = requests.get(tmdb_url).json()
-            
             genres_data = m.get('genres', [])
             auto_cat = "Action"
             if state['type'] == 'tv': auto_cat = "Web Series"
@@ -332,7 +341,6 @@ def register_handlers(bot_inst):
                 for g in genres_data:
                     if g['name'] in CATEGORIES:
                         auto_cat = g['name']; break
-
             title = m.get('title') or m.get('name', 'Unknown')
             year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
             cast = ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]])
@@ -356,13 +364,12 @@ def register_handlers(bot_inst):
                     {'$set': {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
                      '$push': {'files': {'$each': state['temp_files']}}}, upsert=True
                 )
-            
             bot_inst.send_message(call.message.chat.id, f"✅ সফলভাবে পাবলিশ হয়েছে: {title}\n📂 ক্যাটাগরি: {auto_cat}\n💎 কোয়ালিটি সংখ্যা: {len(state['temp_files'])}")
             del admin_states[uid]
         except Exception as e:
             bot_inst.send_message(call.message.chat.id, f"❌ এরর: {e}")
 
-# --- [বট ইনিশিয়ালাইজেশন] ---
+# --- [বট সার্ভিস সেটিংস] ---
 def init_bot_service():
     global bot
     config = get_config()
@@ -498,42 +505,33 @@ def fetch_info():
     url = request.form.get('url')
     tmdb_key = get_config().get('TMDB_API_KEY')
     if not tmdb_key: return jsonify({'error': 'TMDB Key missing'})
-
     tmdb_id, media_type = None, "movie"
     imdb_match = re.search(r'tt\d+', url)
     tmdb_match = re.search(r'tmdb.org/(movie|tv)/(\d+)', url)
     only_id_match = re.match(r'^\d+$', url)
-
     try:
         if imdb_match:
             imdb_id = imdb_match.group(0)
             res = requests.get(f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={tmdb_key}&external_source=imdb_id").json()
             if res.get('movie_results'): tmdb_id, media_type = res['movie_results'][0]['id'], "movie"
             elif res.get('tv_results'): tmdb_id, media_type = res['tv_results'][0]['id'], "tv"
-        elif tmdb_match:
-            media_type, tmdb_id = tmdb_match.group(1), tmdb_match.group(2)
-        elif only_id_match:
-            tmdb_id = url
-            media_type = request.form.get('type', 'movie')
-
+        elif tmdb_match: media_type, tmdb_id = tmdb_match.group(1), tmdb_match.group(2)
+        elif only_id_match: tmdb_id = url; media_type = request.form.get('type', 'movie')
         if not tmdb_id: return jsonify({'error': 'ID not found'})
         m = requests.get(f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={tmdb_key}&append_to_response=credits,videos").json()
-        
         genres_data = m.get('genres', [])
         auto_cat = "Action"
         if media_type == 'tv': auto_cat = "Web Series"
         elif genres_data:
             for g in genres_data:
                 if g['name'] in CATEGORIES: auto_cat = g['name']; break
-
         trailer = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
         return jsonify({
             'tmdb_id': str(tmdb_id), 'type': media_type, 'title': m.get('title') or m.get('name'),
             'year': (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4],
             'rating': str(round(m.get('vote_average', 0), 1)), 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
             'story': m.get('overview'), 'director': next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A'),
-            'cast': ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]]),
-            'category': auto_cat,
+            'cast': ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]]), 'category': auto_cat,
             'trailer': f"https://www.youtube.com/embed/{trailer}" if trailer else ""
         })
     except Exception as e: return jsonify({'error': str(e)})
@@ -547,8 +545,7 @@ def manual_add():
         'year': request.form.get('year'), 'poster': request.form.get('poster'),
         'rating': request.form.get('rating'), 'story': request.form.get('story'),
         'director': request.form.get('director'), 'cast': request.form.get('cast'),
-        'category': request.form.get('category'),
-        'trailer': request.form.get('trailer')
+        'category': request.form.get('category'), 'trailer': request.form.get('trailer')
     }
     movies_col.update_one({'tmdb_id': tid}, {'$set': movie_info}, upsert=True)
     return redirect(url_for('edit_movie', tmdb_id=tid))
@@ -574,9 +571,8 @@ def update_movie():
     data = {
         'title': request.form.get('title'), 'year': request.form.get('year'),
         'rating': request.form.get('rating'), 'poster': request.form.get('poster'),
-        'category': request.form.get('category'),
-        'trailer': request.form.get('trailer'), 'director': request.form.get('director'),
-        'cast': request.form.get('cast'), 'story': request.form.get('story')
+        'category': request.form.get('category'), 'trailer': request.form.get('trailer'),
+        'director': request.form.get('director'), 'cast': request.form.get('cast'), 'story': request.form.get('story')
     }
     movies_col.update_one({'tmdb_id': tid}, {'$set': data})
     return redirect('/admin?tab=movies')
@@ -622,7 +618,7 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates ==================
+# ================== HTML Templates (বিন্দু পরিমান পরিবর্তন ছাড়াই) ==================
 
 COMMON_STYLE = """
 <style>
@@ -656,8 +652,16 @@ COMMON_STYLE = """
     .admin-card { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 25px; }
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
     .logo-img { height: 40px; width: 40px; border-radius: 50%; object-fit: cover; margin-right: 10px; border: 1px solid var(--neon); }
-    .search-results-container { background: #161b22; border-radius: 10px; border: 1px solid #30363d; max-height: 450px; overflow-y: auto; padding: 10px; margin-top: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-    .search-item { display: flex; align-items: center; padding: 12px; margin-bottom: 10px; background: #0d1117; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: 0.3s ease; }
+    .search-results-container { 
+        background: #161b22; border-radius: 10px; border: 1px solid #30363d; 
+        max-height: 450px; overflow-y: auto; padding: 10px; margin-top: 10px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    .search-item { 
+        display: flex; align-items: center; padding: 12px; margin-bottom: 10px;
+        background: #0d1117; border-radius: 10px; cursor: pointer; 
+        border: 1px solid transparent; transition: 0.3s ease;
+    }
     .search-item:hover { border-color: var(--duple); background: #1c2128; transform: translateX(5px); }
     .search-item img { width: 60px; height: 90px; object-fit: cover; border-radius: 8px; margin-right: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
     .search-info { flex-grow: 1; }
@@ -880,15 +884,11 @@ function searchTMDB() {
                 let poster = i.poster_path ? 'https://image.tmdb.org/t/p/w92' + i.poster_path : 'https://via.placeholder.com/92x138?text=No+Img';
                 let date = (i.release_date || i.first_air_date || 'N/A').substring(0,4);
                 let badgeClass = i.media_type == 'movie' ? 'badge-movie' : 'badge-tv';
-                
                 h += `<div class="search-item" onclick="selectFromSearch('${i.media_type}', '${i.id}')">
                         <img src="${poster}">
                         <div class="search-info">
                             <b>${i.title || i.name}</b>
-                            <div class="search-meta">
-                                <span>📅 ${date}</span>
-                                <span>⭐ ${i.vote_average || '0'}</span>
-                            </div>
+                            <div class="search-meta"><span>📅 ${date}</span><span>⭐ ${i.vote_average || '0'}</span></div>
                         </div>
                         <span class="search-badge ${badgeClass}">${i.media_type}</span>
                       </div>`;
@@ -897,12 +897,7 @@ function searchTMDB() {
         $('#search_results_box').html(h || '<div class="p-3 text-center">No results found</div>');
     });
 }
-function selectFromSearch(t, id) { 
-    $('#f_type').val(t); 
-    $('#url_in').val(id); 
-    $('#search_results_box').fadeOut(); 
-    fetchData(); 
-}
+function selectFromSearch(t, id) { $('#f_type').val(t); $('#url_in').val(id); $('#search_results_box').fadeOut(); fetchData(); }
 function fetchData() {
     let fetchBtn = $('.btn-secondary');
     fetchBtn.html('Fetching...').prop('disabled', true);
