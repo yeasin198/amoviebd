@@ -565,7 +565,7 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates (Modified Slider) ==================
+# ================== HTML Templates ==================
 
 COMMON_STYLE = """
 <style>
@@ -595,12 +595,24 @@ COMMON_STYLE = """
         transition: 0.3s; box-shadow: 0 4px 15px rgba(0, 210, 255, 0.4);
     }
     .btn-watch:hover { background: #fff; color: var(--duple); transform: scale(1.05); }
-
     .carousel-indicators [data-bs-target] { width: 12px; height: 12px; border-radius: 50%; background-color: var(--duple); margin: 0 5px; }
 
     @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
 
-    /* Other Styles */
+    /* Search Results Styles */
+    .search-results-container {
+        position: absolute; width: 100%; background: white; border-radius: 8px; 
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3); z-index: 1000; max-height: 450px; overflow-y: auto; display: none; margin-top: 5px; border: 1px solid #ddd;
+    }
+    .search-item {
+        display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: 0.2s; color: #333;
+    }
+    .search-item:hover { background: #f8f9fa; }
+    .search-item img { width: 45px; height: 65px; object-fit: cover; border-radius: 4px; margin-right: 15px; border: 1px solid #ddd; }
+    .search-item .info b { display: block; font-size: 14px; }
+    .search-item .info small { color: #666; font-size: 12px; }
+
+    /* General Styles */
     .neon-card { background: var(--card); border: 1px solid #45a29e; border-radius: 12px; transition: 0.5s; overflow: hidden; position: relative; }
     .neon-card:hover { transform: translateY(-8px); box-shadow: 0 0 20px var(--neon); border-color: var(--neon); }
     .btn-neon { background: var(--neon); color: var(--dark); font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.3s; display: inline-block; cursor:pointer;}
@@ -609,7 +621,7 @@ COMMON_STYLE = """
     .cat-pill { padding: 6px 16px; border-radius: 20px; border: 1px solid var(--neon); color: var(--neon); text-decoration: none; margin: 4px; display: inline-block; font-size: 13px; transition: 0.3s; }
     .cat-pill.active, .cat-pill:hover { background: var(--neon); color: var(--dark); font-weight: bold; }
     
-    .sidebar { width: 260px; height: 100vh; background: #1f2833; position: fixed; top: 0; left: 0; padding: 20px 0; border-right: 2px solid var(--neon); z-index: 1000; }
+    .sidebar { width: 260px; height: 100vh; background: #1f2833; position: fixed; top: 0; left: 0; padding: 20px 0; border-right: 2px solid var(--neon); z-index: 1001; }
     .sidebar-brand { text-align: center; padding: 0 20px 20px; border-bottom: 1px solid #45a29e; margin-bottom: 20px; }
     .sidebar a { padding: 12px 25px; text-decoration: none; font-size: 15px; color: #fff; display: flex; align-items: center; transition: 0.3s; }
     .sidebar a:hover, .sidebar a.active { background: var(--neon); color: var(--dark); font-weight: bold; }
@@ -641,7 +653,6 @@ HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=de
 </div></nav>
 
 <div class="container-fluid px-0">
-    <!-- Duple Style Slider Section -->
     {% if slider_movies and not query and not cat %}
     <div id="heroSlider" class="carousel slide hero-slider mb-5" data-bs-ride="carousel">
         <div class="carousel-indicators">
@@ -772,12 +783,13 @@ ADMIN_ADD_HTML = f"<!DOCTYPE html><html><head><title>Add Content</title><link re
     <div class="row">
         <div class="col-md-6">
             <div class="admin-card position-relative">
-                <h5>🔍 TMDb Search</h5>
+                <h5>🔍 TMDb Search (with Poster)</h5>
                 <div class="input-group mb-2">
-                    <input id="tmdb_search_input" class="form-control" placeholder="Search by name...">
+                    <input id="tmdb_search_input" class="form-control" placeholder="Type movie/show name...">
                     <button class="btn btn-primary" onclick="searchTMDB()">Search</button>
                 </div>
-                <div id="search_results_box" class="search-results" style="display:none;"></div>
+                <div id="search_results_box" class="search-results-container"></div>
+                
                 <hr>
                 <h5>🔗 Fetch by ID</h5>
                 <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="IMDb Link or TMDb ID..."><button class="btn btn-secondary" onclick="fetchData()">Fetch</button></div>
@@ -808,17 +820,34 @@ ADMIN_ADD_HTML = f"<!DOCTYPE html><html><head><title>Add Content</title><link re
 <script>
 function searchTMDB() {
     let q = $('#tmdb_search_input').val(); if(!q) return;
+    $('#search_results_box').html('<div class="p-3 text-center">Searching...</div>').show();
     $.post('/admin/search_tmdb', {query: q}, function(data) {
         let h = '';
+        if(data.length === 0) h = '<div class="p-3 text-center text-muted">No results found</div>';
         data.forEach(i => {
             if(i.media_type=='movie' || i.media_type=='tv') {
-                h += `<div class="search-item" onclick="selectFromSearch('${i.media_type}', '${i.id}')"><b>[${i.media_type.toUpperCase()}]</b> ${i.title || i.name} (${(i.release_date || i.first_air_date || '').substring(0,4)})</div>`;
+                let poster = i.poster_path ? 'https://image.tmdb.org/t/p/w92' + i.poster_path : 'https://via.placeholder.com/92x138?text=No+Img';
+                let name = i.title || i.name;
+                let year = (i.release_date || i.first_air_date || 'N/A').substring(0,4);
+                h += `
+                <div class="search-item" onclick="selectFromSearch('${i.media_type}', '${i.id}')">
+                    <img src="${poster}">
+                    <div class="info">
+                        <b>[${i.media_type.toUpperCase()}] ${name}</b>
+                        <small>Release: ${year} | Rating: ${i.vote_average}</small>
+                    </div>
+                </div>`;
             }
         });
-        $('#search_results_box').html(h).show();
+        $('#search_results_box').html(h);
     });
 }
-function selectFromSearch(t, id) { $('#f_type').val(t); $('#url_in').val(id); $('#search_results_box').hide(); fetchData(); }
+function selectFromSearch(t, id) { 
+    $('#f_type').val(t); 
+    $('#url_in').val(id); 
+    $('#search_results_box').hide(); 
+    fetchData(); 
+}
 function fetchData() {
     $.post('/admin/fetch_info', {url: $('#url_in').val(), type: $('#f_type').val()}, function(d) {
         if(d.error) return alert(d.error);
@@ -827,6 +856,12 @@ function fetchData() {
         $('#f_story').val(d.story); $('#f_type').val(d.type); $('#f_cat').val(d.category);
     });
 }
+// Close search on click outside
+$(document).on('click', function (e) {
+    if ($(e.target).closest(".position-relative").length === 0) {
+        $("#search_results_box").hide();
+    }
+});
 </script></body></html>"""
 
 ADMIN_MOVIES_HTML = f"<!DOCTYPE html><html><head><title>Movie List</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + ADMIN_SIDEBAR + """
