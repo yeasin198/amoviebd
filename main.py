@@ -25,7 +25,6 @@ from bson import ObjectId
 from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
 
 # ================== ডাটাবেস সেটআপ ==================
-# আপনার MongoDB URI এখানে দিন অথবা Environment Variable ব্যবহার করুন
 MONGO_URI = os.environ.get('MONGO_URI', "YOUR_MONGODB_URI_HERE") 
 
 try:
@@ -94,12 +93,30 @@ def register_handlers(bot_inst):
 
     @bot_inst.message_handler(commands=['start'])
     def start(message):
-        if not users_col.find_one({'user_id': message.from_user.id}):
-            users_col.insert_one({'user_id': message.from_user.id, 'name': message.from_user.first_name})
+        uid = message.from_user.id
+        if not users_col.find_one({'user_id': uid}):
+            users_col.insert_one({'user_id': uid, 'name': message.from_user.first_name})
             
         config = get_config()
         if len(message.text.split()) > 1:
             cmd_data = message.text.split()[1]
+            
+            # লিঙ্ক থেকে ফিরে এসে মুভি সিলেক্ট করা হ্যান্ডেল করা
+            if cmd_data.startswith('sel_'):
+                if str(uid) != str(config.get('ADMIN_ID')):
+                    bot_inst.reply_to(message, "🚫 আপনি এডমিন নন।")
+                    return
+                _, m_type, m_id = cmd_data.split('_')
+                admin_states[uid] = {'type': m_type, 'tmdb_id': m_id, 'temp_files': []}
+                
+                if m_type == 'movie':
+                    ask_movie_lang(message, m_id)
+                else:
+                    msg = bot_inst.send_message(message.chat.id, "📺 সিজন নম্বর লিখুন (বা /cancel):")
+                    bot_inst.register_next_step_handler(msg, get_season)
+                return
+
+            # ফাইল ডাউনলোড লিঙ্ক হ্যান্ডেল করা
             if cmd_data.startswith('dl_'):
                 file_to_send = cmd_data.replace('dl_', '')
                 protect = True if config.get('PROTECT_CONTENT') == 'on' else False
@@ -113,6 +130,7 @@ def register_handlers(bot_inst):
                 except:
                     bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি।")
                 return
+
         bot_inst.reply_to(message, f"🎬 {config.get('SITE_NAME')} এ স্বাগতম! মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।")
 
     @bot_inst.message_handler(commands=['cancel'])
@@ -161,53 +179,21 @@ def register_handlers(bot_inst):
             bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। (যেমন: /post Leo)")
             return
         
-        tmdb_api = config.get('TMDB_API_KEY')
-        url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_api}&query={query}"
-        try: res = requests.get(url).json().get('results', [])
-        except: res = []
-
-        if not res:
-            bot_inst.reply_to(message, "❌ কিছুই পাওয়া যায়নি।")
-            return
-
-        bot_inst.send_message(message.chat.id, "🔍 সার্চ রেজাল্ট (পোস্টারসহ):")
+        # লিঙ্ক জেনারেট করা
+        site_url = config.get('SITE_URL')
+        encoded_query = urllib.parse.quote(query)
+        selection_url = f"{site_url}/admin/bot_select?q={encoded_query}"
         
-        for m in res[:5]: # বটের মেসেজ লিমিট করার জন্য ৫টি
-            if m['media_type'] not in ['movie', 'tv']: continue
-            name = m.get('title') or m.get('name')
-            year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
-            p_path = m.get('poster_path')
-            p_url = f"https://image.tmdb.org/t/p/w500{p_path}" if p_path else "https://via.placeholder.com/500x750?text=No+Poster"
-            
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton(text="✅ সিলেক্ট করুন", callback_data=f"sel_{m['media_type']}_{m['id']}"))
-            
-            try:
-                bot_inst.send_photo(
-                    message.chat.id, p_url, 
-                    caption=f"🎬 **{name} ({year})**\n━━━━━━━━━━━━━━━\n🏷 Media: {m['media_type'].upper()}\n⭐ Rating: {m.get('vote_average')}\n━━━━━━━━━━━━━━━",
-                    reply_markup=markup, parse_mode="Markdown"
-                )
-            except:
-                # যদি ইমেজ পাঠাতে ব্যর্থ হয় তবে টেক্সট হিসেবে পাঠাবে
-                bot_inst.send_message(message.chat.id, f"🎬 {name} ({year})", reply_markup=markup)
-
-    @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
-    def handle_selection(call):
-        _, m_type, m_id = call.data.split('_')
-        admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id, 'temp_files': []}
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔍 মুভি সিলেক্ট করুন (লিঙ্ক)", url=selection_url))
         
-        if m_type == 'movie':
-            ask_movie_lang(call.message, m_id)
-        else:
-            msg = bot_inst.send_message(call.message.chat.id, "📺 সিজন নম্বর লিখুন (বা /cancel):")
-            bot_inst.register_next_step_handler(msg, get_season)
+        bot_inst.send_message(message.chat.id, f"🔎 '{query}' এর জন্য রেজাল্ট দেখতে এবং সিলেক্ট করতে নিচের বাটনে ক্লিক করুন। সিলেক্ট করার পর আপনি আবার বটের চ্যাটে ফিরে আসবেন।", reply_markup=markup)
 
     def ask_movie_lang(message, mid):
         markup = types.InlineKeyboardMarkup()
         for l in ["Bangla", "Hindi", "English", "Multi"]:
             markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{mid}_{l}"))
-        bot_inst.send_message(message.chat.id, "🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", reply_markup=markup)
+        bot.send_message(message.chat.id, "🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", reply_markup=markup)
 
     def get_season(message):
         if message.text == '/cancel': return cancel_process(message)
@@ -385,7 +371,6 @@ def home():
     total = movies_col.count_documents(query_filter)
     movies = list(movies_col.find(query_filter).sort('_id', -1).skip(skip).limit(limit))
     
-    # স্লাইডারের জন্য সর্বশেষ ৬টি মুভি
     slider_movies = list(movies_col.find({}).sort('_id', -1).limit(6))
     
     pages = math.ceil(total / limit)
@@ -451,6 +436,25 @@ def admin():
             'movies': movies_col.count_documents({})
         }
         return render_template_string(ADMIN_DASHBOARD_HTML, stats=stats, config=config)
+
+# বটের সার্চের জন্য মুভি সিলেকশন পেজ
+@app.route('/admin/bot_select')
+def bot_select_page():
+    query = request.args.get('q')
+    config = get_config()
+    tmdb_api = config.get('TMDB_API_KEY')
+    bot_username = ""
+    try:
+        if bot: bot_username = bot.get_me().username
+    except: pass
+    
+    url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_api}&query={query}"
+    res = []
+    try:
+        res = requests.get(url).json().get('results', [])
+    except: pass
+    
+    return render_template_string(BOT_SELECT_HTML, results=res, bot_username=bot_username, query=query)
 
 @app.route('/admin/search_tmdb', methods=['POST'])
 def search_tmdb():
@@ -594,7 +598,7 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates (Styles & Layout) ==================
+# ================== HTML Templates ==================
 
 COMMON_STYLE = """
 <style>
@@ -602,7 +606,6 @@ COMMON_STYLE = """
     :root { --neon: #66fcf1; --dark: #0b0c10; --card: #1f2833; --text: #c5c6c7; --duple: #00d2ff; }
     body { background: var(--dark); color: var(--text); font-family: 'Poppins', sans-serif; overflow-x: hidden; }
     
-    /* Duple Style Slider */
     .hero-slider { margin-bottom: 40px; position: relative; border-radius: 15px; overflow: hidden; }
     .carousel-item { height: 500px; }
     .carousel-item img { height: 100%; width: 100%; object-fit: cover; }
@@ -610,27 +613,13 @@ COMMON_STYLE = """
         content: ""; position: absolute; bottom: 0; left: 0; width: 100%; height: 100%; 
         background: linear-gradient(to top, rgba(11, 12, 16, 1) 10%, rgba(11, 12, 16, 0.4) 50%, rgba(0,0,0,0) 100%);
     }
-    .carousel-caption { 
-        bottom: 50px; left: 5%; text-align: left; z-index: 10; width: 60%; 
-        animation: fadeInUp 0.8s ease-in-out;
-    }
+    .carousel-caption { bottom: 50px; left: 5%; text-align: left; z-index: 10; width: 60%; animation: fadeInUp 0.8s ease-in-out; }
     .carousel-caption h3 { font-size: 3rem; font-weight: 700; color: #fff; text-shadow: 0 0 10px rgba(0,0,0,0.5); margin-bottom: 10px; }
     .carousel-caption .meta { font-size: 16px; color: var(--duple); font-weight: 600; margin-bottom: 15px; }
     .carousel-caption p { font-size: 15px; color: #ddd; max-height: 80px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
     
     .btn-watch { background: var(--duple); color: #fff; padding: 10px 30px; border-radius: 30px; text-decoration: none; font-weight: 600; display: inline-block; margin-top: 15px; transition: 0.3s; box-shadow: 0 4px 15px rgba(0, 210, 255, 0.4); }
     .btn-watch:hover { background: #fff; color: var(--duple); transform: scale(1.05); }
-    .carousel-indicators [data-bs-target] { width: 12px; height: 12px; border-radius: 50%; background-color: var(--duple); margin: 0 5px; }
-
-    @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
-
-    /* Search Results Container (Admin Panel) */
-    .search-results-container { position: absolute; width: 100%; background: white; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); z-index: 1000; max-height: 450px; overflow-y: auto; display: none; margin-top: 5px; border: 1px solid #ddd; }
-    .search-item { display: flex; align-items: center; padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: 0.2s; color: #333; }
-    .search-item:hover { background: #f8f9fa; }
-    .search-item img { width: 45px; height: 65px; object-fit: cover; border-radius: 4px; margin-right: 15px; border: 1px solid #ddd; }
-    .search-item .info b { display: block; font-size: 14px; }
-    .search-item .info small { color: #666; font-size: 12px; }
 
     .neon-card { background: var(--card); border: 1px solid #45a29e; border-radius: 12px; transition: 0.5s; overflow: hidden; position: relative; }
     .neon-card:hover { transform: translateY(-8px); box-shadow: 0 0 20px var(--neon); border-color: var(--neon); }
@@ -649,6 +638,8 @@ COMMON_STYLE = """
     .admin-card { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 25px; }
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
     .logo-img { height: 40px; width: 40px; border-radius: 50%; object-fit: cover; margin-right: 10px; border: 1px solid var(--neon); }
+
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
 
     @media (max-width: 768px) {
         .sidebar { display: none; }
@@ -803,11 +794,8 @@ ADMIN_ADD_HTML = f"<!DOCTYPE html><html><head><title>Add Content</title><link re
         <div class="col-md-6">
             <div class="admin-card position-relative">
                 <h5>🔍 TMDb Search (with Poster)</h5>
-                <div class="input-group mb-2">
-                    <input id="tmdb_search_input" class="form-control" placeholder="Type movie/show name...">
-                    <button class="btn btn-primary" onclick="searchTMDB()">Search</button>
-                </div>
-                <div id="search_results_box" class="search-results-container"></div>
+                <div class="input-group mb-2"><input id="tmdb_search_input" class="form-control" placeholder="Search..."><button class="btn btn-primary" onclick="searchTMDB()">Search</button></div>
+                <div id="search_results_box" class="search-results-container" style="position:static; display:none; max-height:300px;"></div>
                 <hr>
                 <h5>🔗 Fetch by ID</h5>
                 <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="IMDb Link or TMDb ID..."><button class="btn btn-secondary" onclick="fetchData()">Fetch</button></div>
@@ -818,12 +806,8 @@ ADMIN_ADD_HTML = f"<!DOCTYPE html><html><head><title>Add Content</title><link re
                 <form action="/admin/manual_add" method="POST">
                     <input id="f_title" name="title" class="form-control mb-2" placeholder="Title" required>
                     <input id="f_id" name="tmdb_id" class="form-control mb-2" placeholder="TMDB ID" required>
-                    <select id="f_type" name="type" class="form-control mb-2">
-                        <option value="movie">Movie</option><option value="tv">TV Series</option>
-                    </select>
-                    <select id="f_cat" name="category" class="form-control mb-2">
-                        {% for cat in categories %}<option value="{{cat}}">{{cat}}</option>{% endfor %}
-                    </select>
+                    <select id="f_type" name="type" class="form-control mb-2"><option value="movie">Movie</option><option value="tv">TV Series</option></select>
+                    <select id="f_cat" name="category" class="form-control mb-2">{% for cat in categories %}<option value="{{cat}}">{{cat}}</option>{% endfor %}</select>
                     <input id="f_year" name="year" class="form-control mb-2" placeholder="Year">
                     <input id="f_rating" name="rating" class="form-control mb-2" placeholder="Rating">
                     <input id="f_poster" name="poster" class="form-control mb-2" placeholder="Poster URL">
@@ -841,16 +825,13 @@ function searchTMDB() {
     $('#search_results_box').html('<div class="p-3 text-center">Searching...</div>').show();
     $.post('/admin/search_tmdb', {query: q}, function(data) {
         let h = '';
-        if(data.length === 0) h = '<div class="p-3 text-center text-muted">No results found</div>';
         data.forEach(i => {
             if(i.media_type=='movie' || i.media_type=='tv') {
                 let poster = i.poster_path ? 'https://image.tmdb.org/t/p/w92' + i.poster_path : 'https://via.placeholder.com/92x138?text=No+Img';
-                let name = i.title || i.name;
-                let year = (i.release_date || i.first_air_date || 'N/A').substring(0,4);
-                h += `<div class="search-item" onclick="selectFromSearch('${i.media_type}', '${i.id}')"><img src="${poster}"><div class="info"><b>[${i.media_type.toUpperCase()}] ${name}</b><small>Release: ${year} | Rating: ${i.vote_average}</small></div></div>`;
+                h += `<div class="search-item" onclick="selectFromSearch('${i.media_type}', '${i.id}')"><img src="${poster}"><div class="info"><b>[${i.media_type.toUpperCase()}] ${i.title || i.name}</b><small>Release: ${(i.release_date || i.first_air_date || 'N/A').substring(0,4)}</small></div></div>`;
             }
         });
-        $('#search_results_box').html(h);
+        $('#search_results_box').html(h || '<div class="p-3 text-center">No results</div>');
     });
 }
 function selectFromSearch(t, id) { $('#f_type').val(t); $('#url_in').val(id); $('#search_results_box').hide(); fetchData(); }
@@ -862,7 +843,6 @@ function fetchData() {
         $('#f_story').val(d.story); $('#f_type').val(d.type); $('#f_cat').val(d.category);
     });
 }
-$(document).on('click', function (e) { if ($(e.target).closest(".position-relative").length === 0) { $("#search_results_box").hide(); } });
 </script></body></html>"""
 
 ADMIN_MOVIES_HTML = f"<!DOCTYPE html><html><head><title>Movie List</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + ADMIN_SIDEBAR + """
@@ -872,19 +852,7 @@ ADMIN_MOVIES_HTML = f"<!DOCTYPE html><html><head><title>Movie List</title><link 
         <form class="d-flex mb-3"><input name="q" class="form-control me-2" placeholder="Search..." value="{{q}}"><button class="btn btn-info">Search</button></form>
         <table class="table table-hover">
             <thead><tr><th>Poster</th><th>Title</th><th>Category</th><th>Action</th></tr></thead>
-            <tbody>
-                {% for m in movies %}
-                <tr>
-                    <td><img src="{{m.poster}}" width="40" height="55" class="rounded"></td>
-                    <td>{{m.title}} ({{m.year}})</td>
-                    <td>{{m.category}}</td>
-                    <td>
-                        <a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit</a>
-                        <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Del</a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
+            <tbody>{% for m in movies %}<tr><td><img src="{{m.poster}}" width="40" height="55" class="rounded"></td><td>{{m.title}} ({{m.year}})</td><td>{{m.category}}</td><td><a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit</a> <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Del</a></td></tr>{% endfor %}</tbody>
         </table>
     </div>
 </div></body></html>"""
@@ -897,15 +865,15 @@ ADMIN_SETTINGS_HTML = f"<!DOCTYPE html><html><head><title>Settings</title><link 
             <div class="row">
                 <div class="col-md-6 mb-3"><label>Site Name</label><input name="site_name" class="form-control" value="{{config.SITE_NAME}}"></div>
                 <div class="col-md-6 mb-3"><label>Site Logo URL</label><input name="site_logo" class="form-control" value="{{config.SITE_LOGO}}"></div>
-                <div class="col-md-6 mb-3"><label>Site URL (Without last /)</label><input name="site_url" class="form-control" value="{{config.SITE_URL}}"></div>
+                <div class="col-md-6 mb-3"><label>Site URL</label><input name="site_url" class="form-control" value="{{config.SITE_URL}}" placeholder="https://yourdomain.com"></div>
                 <div class="col-md-6 mb-3"><label>Telegram Bot Token</label><input name="token" class="form-control" value="{{config.BOT_TOKEN}}"></div>
                 <div class="col-md-6 mb-3"><label>TMDb API Key</label><input name="tmdb" class="form-control" value="{{config.TMDB_API_KEY}}"></div>
                 <div class="col-md-6 mb-3"><label>Admin Telegram ID</label><input name="admin_id" class="form-control" value="{{config.ADMIN_ID}}"></div>
                 <div class="col-md-6 mb-3"><label>Storage Channel ID</label><input name="channel_id" class="form-control" value="{{config.STORAGE_CHANNEL_ID}}"></div>
-                <div class="col-md-6 mb-3"><label>Shortener Domain</label><input name="s_url" class="form-control" value="{{config.SHORTENER_URL}}" placeholder="api.gplinks.com"></div>
+                <div class="col-md-6 mb-3"><label>Shortener Domain</label><input name="s_url" class="form-control" value="{{config.SHORTENER_URL}}"></div>
                 <div class="col-md-6 mb-3"><label>Shortener API Key</label><input name="s_api" class="form-control" value="{{config.SHORTENER_API}}"></div>
-                <div class="col-md-6 mb-3"><label>Auto Delete Time (Sec, 0 to disable)</label><input name="delete_time" type="number" class="form-control" value="{{config.AUTO_DELETE_TIME}}"></div>
-                <div class="col-md-6 mb-3"><label>Protect Content (on/off)</label><input name="protect" class="form-control" value="{{config.PROTECT_CONTENT}}"></div>
+                <div class="col-md-6 mb-3"><label>Auto Delete Time (Sec)</label><input name="delete_time" type="number" class="form-control" value="{{config.AUTO_DELETE_TIME}}"></div>
+                <div class="col-md-6 mb-3"><label>Protect Content</label><input name="protect" class="form-control" value="{{config.PROTECT_CONTENT}}"></div>
             </div>
             <button class="btn btn-primary w-100 mt-2">💾 Save Configuration</button>
         </form>
@@ -915,39 +883,40 @@ ADMIN_SETTINGS_HTML = f"<!DOCTYPE html><html><head><title>Settings</title><link 
 EDIT_HTML = f"<!DOCTYPE html><html><head><title>Edit Content</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + ADMIN_SIDEBAR + """
 <div class="main-content">
     <div class="row">
-        <div class="col-md-6">
-            <div class="admin-card">
-                <h5>✏️ Edit: {{m.title}}</h5><hr>
-                <form action="/admin/update" method="POST">
-                    <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
-                    <label>Title</label><input name="title" class="form-control mb-2" value="{{m.title}}">
-                    <label>Category</label><select name="category" class="form-control mb-2">{% for cat in categories %}<option value="{{cat}}" {% if m.category == cat %}selected{% endif %}>{{cat}}</option>{% endfor %}</select>
-                    <label>Year</label><input name="year" class="form-control mb-2" value="{{m.year}}">
-                    <label>Rating</label><input name="rating" class="form-control mb-2" value="{{m.rating}}">
-                    <label>Poster</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
-                    <label>Trailer</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
-                    <label>Storyline</label><textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea>
-                    <button class="btn btn-success w-100">Update Metadata</button>
-                </form>
-            </div>
-        </div>
-        <div class="col-md-6">
-            <div class="admin-card">
-                <h5>➕ Add Link (Message ID)</h5><hr>
-                <form action="/admin/add_file" method="POST" class="mb-4">
-                    <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
-                    <input name="quality" class="form-control mb-2" placeholder="e.g. 720p Bangla" required>
-                    <input name="file_id" class="form-control mb-2" placeholder="Telegram Msg ID" required>
-                    <button class="btn btn-info w-100">Add Link</button>
-                </form>
-                <h6>Current Links:</h6>
-                <ul class="list-group">{% if m.files %}{% for f in m.files %}<li class="list-group-item d-flex justify-content-between">{{f.quality}} (ID: {{f.file_id}})<a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">X</a></li>{% endfor %}{% else %}<li class="list-group-item text-muted">No links.</li>{% endif %}</ul>
-            </div>
-        </div>
+        <div class="col-md-6"><div class="admin-card"><h5>✏️ Edit: {{m.title}}</h5><hr><form action="/admin/update" method="POST"><input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}"><label>Title</label><input name="title" class="form-control mb-2" value="{{m.title}}"><label>Category</label><select name="category" class="form-control mb-2">{% for cat in categories %}<option value="{{cat}}" {% if m.category == cat %}selected{% endif %}>{{cat}}</option>{% endfor %}</select><label>Year</label><input name="year" class="form-control mb-2" value="{{m.year}}"><label>Rating</label><input name="rating" class="form-control mb-2" value="{{m.rating}}"><label>Poster</label><input name="poster" class="form-control mb-2" value="{{m.poster}}"><label>Trailer</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}"><label>Storyline</label><textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea><button class="btn btn-success w-100">Update Metadata</button></form></div></div>
+        <div class="col-md-6"><div class="admin-card"><h5>➕ Add Link (Message ID)</h5><hr><form action="/admin/add_file" method="POST" class="mb-4"><input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}"><input name="quality" class="form-control mb-2" placeholder="e.g. 720p Bangla" required><input name="file_id" class="form-control mb-2" placeholder="Msg ID" required><button class="btn btn-info w-100">Add Link</button></form><h6>Current Links:</h6><ul class="list-group">{% if m.files %}{% for f in m.files %}<li class="list-group-item d-flex justify-content-between">{{f.quality}} (ID: {{f.file_id}})<a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">X</a></li>{% endfor %}{% else %}<li class="list-group-item text-muted">No links.</li>{% endif %}</ul></div></div>
     </div>
 </div></body></html>"""
 
 LOGIN_HTML = """<!DOCTYPE html><html><head><title>Admin Login</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'></head><body class='bg-dark d-flex align-items-center' style='height:100vh;'><div class='card p-4 mx-auto shadow-lg' style='width:340px;'><h4 class='text-center'>ADMIN LOGIN</h4><hr><form method='POST'><input name='u' class='form-control mb-2' placeholder='User'><input name='p' type='password' class='form-control mb-3' placeholder='Pass'><button class='btn btn-primary w-100'>Login</button></form></div></body></html>"""
+
+# বটের মুভি সিলেকশন পেজের HTML (আধুনিক এবং সহজ)
+BOT_SELECT_HTML = """
+<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Select Content</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>
+<style>
+    body { background: #0b0c10; color: #fff; font-family: sans-serif; padding: 20px; }
+    .card { background: #1f2833; border: 1px solid #45a29e; border-radius: 10px; margin-bottom: 15px; overflow: hidden; display: flex; text-decoration: none; color: inherit; transition: 0.3s; }
+    .card:hover { transform: scale(1.02); box-shadow: 0 0 15px #66fcf1; }
+    .card img { width: 80px; height: 120px; object-fit: cover; }
+    .info { padding: 10px; display: flex; flex-direction: column; justify-content: center; }
+    .info b { font-size: 16px; color: #66fcf1; }
+    .info small { color: #c5c6c7; }
+</style></head><body>
+    <h4 class="text-center mb-4">Results for: "{{query}}"</h4>
+    {% for i in results %}
+        {% if i.media_type in ['movie', 'tv'] %}
+        <a href="https://t.me/{{bot_username}}?start=sel_{{i.media_type}}_{{i.id}}" class="card">
+            <img src="{% if i.poster_path %}https://image.tmdb.org/t/p/w200{{i.poster_path}}{% else %}https://via.placeholder.com/200x300?text=No+Img{% endif %}">
+            <div class="info">
+                <b>[{{i.media_type|upper}}] {{i.title or i.name}}</b>
+                <small>Release: {{(i.release_date or i.first_air_date or 'N/A')[:4]}}</small>
+                <small>⭐ {{i.vote_average}}</small>
+            </div>
+        </a>
+        {% endif %}
+    {% endfor %}
+    <p class="text-center small mt-4">মুভিটির ওপর ক্লিক করলে সরাসরি টেলিগ্রাম বটে ফিরে যাবেন।</p>
+</body></html>"""
 
 # ================== রান করার অংশ ==================
 
