@@ -164,16 +164,7 @@ def register_handlers(bot_inst):
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('sel_'))
     def handle_selection(call):
         _, m_type, m_id = call.data.split('_')
-        # ক্যাটাগরি নির্বাচনের ধাপ যুক্ত করা হয়েছে
-        markup = types.InlineKeyboardMarkup()
-        for cat in CATEGORIES:
-            markup.add(types.InlineKeyboardButton(text=cat, callback_data=f"cat_{m_type}_{m_id}_{cat}"))
-        bot_inst.edit_message_text("📂 মুভির ক্যাটাগরি সিলেক্ট করুন:", call.message.chat.id, call.message.message_id, reply_markup=markup)
-
-    @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('cat_'))
-    def handle_category_selection(call):
-        _, m_type, m_id, cat = call.data.split('_')
-        admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id, 'category': cat}
+        admin_states[call.from_user.id] = {'type': m_type, 'tmdb_id': m_id}
         
         if m_type == 'movie':
             markup = types.InlineKeyboardMarkup()
@@ -241,6 +232,18 @@ def register_handlers(bot_inst):
             tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
             m = requests.get(tmdb_url).json()
             
+            # --- অটো ক্যাটাগরি সেভিং লজিক ---
+            genres_data = m.get('genres', [])
+            auto_cat = "Action" # ডিফল্ট
+            if state['type'] == 'tv':
+                auto_cat = "Web Series"
+            elif genres_data:
+                # TMDb জেনার থেকে আমাদের CATEGORIES লিস্টের সাথে ম্যাচ করা
+                for g in genres_data:
+                    if g['name'] in CATEGORIES:
+                        auto_cat = g['name']
+                        break
+
             title = m.get('title') or m.get('name', 'Unknown')
             year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
             cast = ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]])
@@ -251,7 +254,7 @@ def register_handlers(bot_inst):
                 'tmdb_id': str(state['tmdb_id']), 'type': state['type'], 'title': title, 'year': year,
                 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
                 'rating': str(round(m.get('vote_average', 0), 1)), 'story': m.get('overview', 'N/A'),
-                'cast': cast, 'director': director, 'category': state.get('category', 'Action'),
+                'cast': cast, 'director': director, 'category': auto_cat,
                 'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else "",
                 'lang': state.get('lang', 'N/A'), 'quality': state.get('qual', 'HD')
             }
@@ -268,7 +271,7 @@ def register_handlers(bot_inst):
                     {'$set': {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
                      '$push': {'files': file_data}}, upsert=True
                 )
-            bot_inst.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}")
+            bot_inst.send_message(message.chat.id, f"✅ সফলভাবে অ্যাড হয়েছে: {title}\n📂 ক্যাটাগরি: {auto_cat}")
             del admin_states[uid]
         except Exception as e:
             bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
@@ -299,7 +302,7 @@ def init_bot_service():
 @app.route('/')
 def home():
     q = request.args.get('search')
-    cat = request.args.get('cat') # ক্যাটাগরি ফিল্টার
+    cat = request.args.get('cat')
     page = int(request.args.get('page', 1))
     limit = 24 
     skip = (page - 1) * limit
@@ -358,7 +361,6 @@ def admin():
         movies = list(movies_col.find().sort('_id', -1))
     return render_template_string(ADMIN_HTML, config=get_config(), movies=movies, q=q, categories=CATEGORIES)
 
-# TMDb Search এর জন্য
 @app.route('/admin/search_tmdb', methods=['POST'])
 def search_tmdb():
     if not session.get('logged_in'): return jsonify({'error': 'Unauthorized'})
@@ -400,6 +402,17 @@ def fetch_info():
         if not tmdb_id: return jsonify({'error': 'ID not found'})
 
         m = requests.get(f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={tmdb_key}&append_to_response=credits,videos").json()
+        
+        # অ্যাডমিন ফেচিং এর জন্যও অটো ক্যাটাগরি
+        genres_data = m.get('genres', [])
+        auto_cat = "Action"
+        if media_type == 'tv': auto_cat = "Web Series"
+        elif genres_data:
+            for g in genres_data:
+                if g['name'] in CATEGORIES:
+                    auto_cat = g['name']
+                    break
+
         trailer = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
         
         return jsonify({
@@ -408,6 +421,7 @@ def fetch_info():
             'rating': str(round(m.get('vote_average', 0), 1)), 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
             'story': m.get('overview'), 'director': next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A'),
             'cast': ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]]),
+            'category': auto_cat,
             'trailer': f"https://www.youtube.com/embed/{trailer}" if trailer else ""
         })
     except Exception as e: return jsonify({'error': str(e)})
@@ -421,7 +435,7 @@ def manual_add():
         'year': request.form.get('year'), 'poster': request.form.get('poster'),
         'rating': request.form.get('rating'), 'story': request.form.get('story'),
         'director': request.form.get('director'), 'cast': request.form.get('cast'),
-        'category': request.form.get('category'), # ক্যাটাগরি
+        'category': request.form.get('category'),
         'trailer': request.form.get('trailer')
     }
     movies_col.update_one({'tmdb_id': tid}, {'$set': movie_info}, upsert=True)
@@ -477,7 +491,6 @@ def save_config():
         'PROTECT_CONTENT': request.form.get('protect')
     }
     config_col.update_one({'type': 'core_settings'}, {'$set': data}, upsert=True)
-    # রিস্টার্ট এর ক্ষেত্রেও থ্রেড ব্যবহার করছি রেন্ডারের জন্য
     threading.Thread(target=init_bot_service).start()
     return redirect(url_for('admin'))
 
@@ -645,7 +658,7 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Panel</title><link rel="
                     <option value="movie">Movie</option>
                     <option value="tv">TV Series</option>
                 </select>
-                <select name="category" class="form-control mb-2">
+                <select id="f_cat" name="category" class="form-control mb-2">
                     {% for cat in categories %}
                     <option value="{{cat}}">{{cat}}</option>
                     {% endfor %}
@@ -726,8 +739,9 @@ function fetchData() {
         if(d.error) return alert(d.error);
         $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year);
         $('#f_rating').val(d.rating); $('#f_poster').val(d.poster); $('#f_trailer').val(d.trailer);
-        $('#f_director').val(d.director); $('#f_cast').val(d.cast); $('#f_story').val(d.story); $('#f_type').val(d.type);
-        alert('Data Loaded!');
+        $('#f_director').val(d.director); $('#f_cast').val(d.cast); $('#f_story').val(d.story); 
+        $('#f_type').val(d.type); $('#f_cat').val(d.category);
+        alert('Data Loaded with Auto Category Detection!');
     });
 }
 
