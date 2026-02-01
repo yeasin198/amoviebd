@@ -4,10 +4,11 @@ import os
 import time
 import threading
 import urllib.parse
+import re  # নতুন ইমপোর্ট
 from telebot import types
 from pymongo import MongoClient
 from bson import ObjectId
-from flask import Flask, render_template_string, redirect, url_for, request, session
+from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
 
 # ================== ডাটাবেস সেটআপ ==================
 MONGO_URI = os.environ.get('MONGO_URI', "YOUR_MONGODB_URI_HERE") 
@@ -283,16 +284,51 @@ def admin():
         movies = list(movies_col.find().sort('_id', -1))
     return render_template_string(ADMIN_HTML, config=get_config(), movies=movies, q=q)
 
+# --- [নতুন: অটোমেটিক ডাটা ফেচিং রুট] ---
+@app.route('/admin/fetch_info', methods=['POST'])
+def fetch_info():
+    if not session.get('logged_in'): return jsonify({'error': 'Unauthorized'})
+    url = request.form.get('url')
+    tmdb_key = get_config().get('TMDB_API_KEY')
+    if not tmdb_key: return jsonify({'error': 'TMDB Key missing'})
+
+    tmdb_id, media_type = None, "movie"
+    imdb_match = re.search(r'tt\d+', url)
+    tmdb_match = re.search(r'tmdb.org/(movie|tv)/(\d+)', url)
+
+    try:
+        if imdb_match:
+            imdb_id = imdb_match.group(0)
+            res = requests.get(f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={tmdb_key}&external_source=imdb_id").json()
+            if res.get('movie_results'): tmdb_id, media_type = res['movie_results'][0]['id'], "movie"
+            elif res.get('tv_results'): tmdb_id, media_type = res['tv_results'][0]['id'], "tv"
+        elif tmdb_match:
+            media_type, tmdb_id = tmdb_match.group(1), tmdb_match.group(2)
+        
+        if not tmdb_id: return jsonify({'error': 'ID not found'})
+
+        m = requests.get(f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={tmdb_key}&append_to_response=credits,videos").json()
+        trailer = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
+        
+        return jsonify({
+            'tmdb_id': str(tmdb_id), 'type': media_type, 'title': m.get('title') or m.get('name'),
+            'year': (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4],
+            'rating': str(round(m.get('vote_average', 0), 1)), 'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
+            'story': m.get('overview'), 'director': next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A'),
+            'cast': ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]]),
+            'trailer': f"https://www.youtube.com/embed/{trailer}" if trailer else ""
+        })
+    except Exception as e: return jsonify({'error': str(e)})
+
 @app.route('/admin/manual_add', methods=['POST'])
 def manual_add():
     if not session.get('logged_in'): return redirect(url_for('login'))
-    tmdb_id = request.form.get('tmdb_id') or str(int(time.time()))
+    tmdb_id = request.form.get('tmdb_id')
     
     movie_info = {
-        'tmdb_id': tmdb_id, 'type': 'movie', 'title': request.form.get('title'),
+        'tmdb_id': tmdb_id, 'type': request.form.get('type', 'movie'), 'title': request.form.get('title'),
         'year': request.form.get('year'), 'poster': request.form.get('poster'),
-        'rating': request.form.get('rating'), 'lang': request.form.get('lang'),
-        'quality': request.form.get('quality'), 'story': request.form.get('story'),
+        'rating': request.form.get('rating'), 'story': request.form.get('story'),
         'director': request.form.get('director'), 'cast': request.form.get('cast'),
         'trailer': request.form.get('trailer')
     }
@@ -300,10 +336,18 @@ def manual_add():
     
     file_id = request.form.get('file_id')
     if file_id:
-        file_data = {'quality': f"{request.form.get('lang')} {request.form.get('quality')}".strip(), 'file_id': file_id}
+        file_data = {'quality': f"{request.form.get('lang', '')} {request.form.get('quality', '')}".strip(), 'file_id': file_id}
         movies_col.update_one({'tmdb_id': tmdb_id}, {'$push': {'files': file_data}})
     
-    return redirect(url_for('admin'))
+    return redirect(url_for('edit_movie', tmdb_id=tmdb_id))
+
+@app.route('/admin/add_file', methods=['POST'])
+def add_file():
+    if not session.get('logged_in'): return redirect(url_for('login'))
+    tid = request.form.get('tmdb_id')
+    file_data = {'quality': request.form.get('quality'), 'file_id': request.form.get('file_id')}
+    movies_col.update_one({'tmdb_id': tid}, {'$push': {'files': file_data}})
+    return redirect(url_for('edit_movie', tmdb_id=tid))
 
 @app.route('/admin/edit/<tmdb_id>')
 def edit_movie(tmdb_id):
@@ -442,28 +486,25 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
     {% if m.trailer %}<div class="mt-5"><h4>Trailer</h4><div class="ratio ratio-16x9 rounded border border-info shadow-lg"><iframe src="{{m.trailer}}" allowfullscreen></iframe></div></div>{% endif %}
 </div></body></html>"""
 
-ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Dashboard</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-light py-4 container">
+ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Dashboard</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"><script src="https://code.jquery.com/jquery-3.6.0.min.js"></script></head><body class="bg-light py-4 container">
 <div class="d-flex justify-content-between mb-4"><h2>⚙️ Admin Panel</h2><a href="/" class="btn btn-dark">Visit Site</a></div>
 <div class="row">
     <div class="col-md-5">
         <div class="admin-box mb-4">
-            <h5>➕ Manual Add Content</h5>
+            <h5>🔗 Fetch from Link (IMDb/TMDB)</h5>
+            <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="Paste Link..."><button class="btn btn-primary" onclick="fetchData()">Fetch</button></div>
+            <hr>
             <form action="/admin/manual_add" method="POST">
-                <input name="title" class="form-control mb-2" placeholder="Title" required>
-                <input name="tmdb_id" class="form-control mb-2" placeholder="TMDB ID (Optional)">
-                <div class="row g-2 mb-2">
-                    <div class="col"><input name="year" class="form-control" placeholder="Year"></div>
-                    <div class="col"><input name="rating" class="form-control" placeholder="Rating"></div>
-                </div>
-                <input name="poster" class="form-control mb-2" placeholder="Poster URL">
-                <input name="trailer" class="form-control mb-2" placeholder="Trailer Link">
-                <input name="lang" class="form-control mb-2" placeholder="Language (e.g. Hindi)">
-                <input name="quality" class="form-control mb-2" placeholder="Quality (e.g. 1080p)">
-                <input name="file_id" class="form-control mb-2" placeholder="Storage File Code (Message ID)">
-                <textarea name="story" class="form-control mb-2" placeholder="Storyline"></textarea>
-                <input name="director" class="form-control mb-2" placeholder="Director">
-                <input name="cast" class="form-control mb-2" placeholder="Cast">
-                <button class="btn btn-primary w-100">Save Movie</button>
+                <input id="f_title" name="title" class="form-control mb-2" placeholder="Title" required>
+                <input id="f_id" name="tmdb_id" class="form-control mb-2" placeholder="TMDB ID" required>
+                <input id="f_type" name="type" type="hidden" value="movie">
+                <div class="row g-2 mb-2"><div class="col"><input id="f_year" name="year" class="form-control" placeholder="Year"></div><div class="col"><input id="f_rating" name="rating" class="form-control" placeholder="Rating"></div></div>
+                <input id="f_poster" name="poster" class="form-control mb-2" placeholder="Poster URL">
+                <input id="f_trailer" name="trailer" class="form-control mb-2" placeholder="Trailer Link">
+                <textarea id="f_story" name="story" class="form-control mb-2" placeholder="Storyline"></textarea>
+                <input id="f_director" name="director" class="form-control mb-2" placeholder="Director">
+                <input id="f_cast" name="cast" class="form-control mb-2" placeholder="Cast">
+                <button class="btn btn-primary w-100">Save & Add Qualities</button>
             </form>
         </div>
         <div class="admin-box">
@@ -481,51 +522,73 @@ ADMIN_HTML = """<!DOCTYPE html><html><head><title>Admin Dashboard</title><link r
     </div>
     <div class="col-md-7">
         <div class="admin-box">
-            <form class="d-flex mb-3"><input name="q" class="form-control me-2" placeholder="Search movies..." value="{{q or ''}}"><button class="btn btn-info">Search</button></form>
-            <table class="table table-striped table-sm">
+            <form class="d-flex mb-3"><input name="q" class="form-control me-2" placeholder="Search..." value="{{q or ''}}"><button class="btn btn-info">Search</button></form>
+            <table class="table table-sm">
                 <thead><tr><th>Title</th><th>Year</th><th>Action</th></tr></thead>
                 {% for m in movies %}
                 <tr><td>{{m.title}}</td><td>{{m.year}}</td><td>
-                    <a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit</a>
-                    <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Del</a>
+                    <a href="/admin/edit/{{m.tmdb_id}}" class="btn btn-sm btn-warning">Edit/Files</a>
+                    <a href="/delete/{{m.tmdb_id}}" class="btn btn-sm btn-danger">Del</a>
                 </td></tr>
                 {% endfor %}
             </table>
         </div>
     </div>
-</div></body></html>"""
+</div>
+<script>
+function fetchData() {
+    let u = $('#url_in').val();
+    if(!u) return alert('Link please!');
+    $.post('/admin/fetch_info', {url: u}, function(d) {
+        if(d.error) return alert(d.error);
+        $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year);
+        $('#f_rating').val(d.rating); $('#f_poster').val(d.poster); $('#f_trailer').val(d.trailer);
+        $('#f_director').val(d.director); $('#f_cast').val(d.cast); $('#f_story').val(d.story); $('#f_type').val(d.type);
+        alert('Data Fetched!');
+    });
+}
+</script>
+</body></html>"""
 
 EDIT_HTML = """<!DOCTYPE html><html><head><title>Edit Movie</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"></head><body class="bg-light container py-5">
-<div class="card p-4 shadow">
-    <h3>✏️ Edit Content: {{m.title}}</h3><hr>
-    <form action="/admin/update" method="POST">
-        <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
-        <div class="row">
-            <div class="col-md-6">
+<div class="row">
+    <div class="col-md-6">
+        <div class="card p-4 shadow mb-4">
+            <h5>✏️ Edit Details: {{m.title}}</h5>
+            <form action="/admin/update" method="POST">
+                <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
                 <label>Title</label><input name="title" class="form-control mb-2" value="{{m.title}}">
                 <label>Year</label><input name="year" class="form-control mb-2" value="{{m.year}}">
                 <label>Rating</label><input name="rating" class="form-control mb-2" value="{{m.rating}}">
-            </div>
-            <div class="col-md-6">
-                <label>Poster URL</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
-                <label>Trailer Link</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
+                <label>Poster</label><input name="poster" class="form-control mb-2" value="{{m.poster}}">
+                <label>Trailer</label><input name="trailer" class="form-control mb-2" value="{{m.trailer}}">
                 <label>Director</label><input name="director" class="form-control mb-2" value="{{m.director}}">
-            </div>
+                <label>Cast</label><input name="cast" class="form-control mb-2" value="{{m.cast}}">
+                <label>Storyline</label><textarea name="story" class="form-control mb-3" rows="4">{{m.story}}</textarea>
+                <button class="btn btn-success w-100">Update Metadata</button>
+            </form>
         </div>
-        <label>Cast</label><input name="cast" class="form-control mb-2" value="{{m.cast}}">
-        <label>Storyline</label><textarea name="story" class="form-control mb-3" rows="5">{{m.story}}</textarea>
-        <button class="btn btn-success">Save Changes</button> <a href="/admin" class="btn btn-secondary">Cancel</a>
-    </form>
-    <div class="mt-4">
-        <h5>📦 Quality Links (Files):</h5>
-        <ul class="list-group">
-            {% for f in m.files %}
-            <li class="list-group-item d-flex justify-content-between">
-                {{f.quality}} (Code: {{f.file_id}})
-                <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="text-danger">Delete Link</a>
-            </li>
-            {% endfor %}
-        </ul>
+    </div>
+    <div class="col-md-6">
+        <div class="card p-4 shadow">
+            <h5>➕ Add Quality Button (Unlimited)</h5>
+            <form action="/admin/add_file" method="POST" class="mb-4">
+                <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}">
+                <input name="quality" class="form-control mb-2" placeholder="Quality (e.g. 720p Dual Audio)" required>
+                <input name="file_id" class="form-control mb-2" placeholder="Storage Message ID" required>
+                <button class="btn btn-info w-100">Add Quality Button</button>
+            </form>
+            <h6>Current Links:</h6>
+            <ul class="list-group">
+                {% for f in m.files %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    {{f.quality}} (ID: {{f.file_id}})
+                    <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" class="btn btn-sm btn-danger">Del</a>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="mt-3 text-center"><a href="/admin" class="btn btn-secondary">Back to Admin</a></div>
     </div>
 </div></body></html>"""
 
