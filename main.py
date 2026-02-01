@@ -11,19 +11,6 @@ from pymongo import MongoClient
 from bson import ObjectId
 from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
 
-import telebot
-import requests
-import os
-import time
-import threading
-import urllib.parse
-import re
-import math
-from telebot import types
-from pymongo import MongoClient
-from bson import ObjectId
-from flask import Flask, render_template_string, redirect, url_for, request, session, jsonify
-
 # ================== ডাটাবেস সেটআপ ==================
 MONGO_URI = os.environ.get('MONGO_URI', "YOUR_MONGODB_URI_HERE") 
 
@@ -101,7 +88,6 @@ def register_handlers(bot_inst):
         if len(message.text.split()) > 1:
             cmd_data = message.text.split()[1]
             
-            # লিঙ্ক থেকে ফিরে এসে মুভি সিলেক্ট করা হ্যান্ডেল করা
             if cmd_data.startswith('sel_'):
                 if str(uid) != str(config.get('ADMIN_ID')):
                     bot_inst.reply_to(message, "🚫 আপনি এডমিন নন।")
@@ -116,7 +102,6 @@ def register_handlers(bot_inst):
                     bot_inst.register_next_step_handler(msg, get_season)
                 return
 
-            # ফাইল ডাউনলোড লিঙ্ক হ্যান্ডেল করা
             if cmd_data.startswith('dl_'):
                 file_to_send = cmd_data.replace('dl_', '')
                 protect = True if config.get('PROTECT_CONTENT') == 'on' else False
@@ -179,7 +164,6 @@ def register_handlers(bot_inst):
             bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। (যেমন: /post Leo)")
             return
         
-        # লিঙ্ক জেনারেট করা
         site_url = config.get('SITE_URL')
         encoded_query = urllib.parse.quote(query)
         selection_url = f"{site_url}/admin/bot_select?q={encoded_query}"
@@ -187,7 +171,7 @@ def register_handlers(bot_inst):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔍 মুভি সিলেক্ট করুন (লিঙ্ক)", url=selection_url))
         
-        bot_inst.send_message(message.chat.id, f"🔎 '{query}' এর জন্য রেজাল্ট দেখতে এবং সিলেক্ট করতে নিচের বাটনে ক্লিক করুন। সিলেক্ট করার পর আপনি আবার বটের চ্যাটে ফিরে আসবেন।", reply_markup=markup)
+        bot_inst.send_message(message.chat.id, f"🔎 '{query}' এর জন্য রেজাল্ট দেখতে এবং সিলেক্ট করতে নিচের বাটনে ক্লিক করুন।", reply_markup=markup)
 
     def ask_movie_lang(message, mid):
         markup = types.InlineKeyboardMarkup()
@@ -332,7 +316,6 @@ def register_handlers(bot_inst):
         except Exception as e:
             bot_inst.send_message(call.message.chat.id, f"❌ এরর: {e}")
 
-# --- [বট ইনিট ফাংশন] ---
 def init_bot_service():
     global bot
     config = get_config()
@@ -370,9 +353,7 @@ def home():
 
     total = movies_col.count_documents(query_filter)
     movies = list(movies_col.find(query_filter).sort('_id', -1).skip(skip).limit(limit))
-    
     slider_movies = list(movies_col.find({}).sort('_id', -1).limit(6))
-    
     pages = math.ceil(total / limit)
     return render_template_string(HOME_HTML, movies=movies, slider_movies=slider_movies, query=q, cat=cat, page=page, pages=pages, categories=CATEGORIES, config=config)
 
@@ -431,13 +412,9 @@ def admin():
     elif tab == 'settings':
         return render_template_string(ADMIN_SETTINGS_HTML, config=config)
     else: # dashboard
-        stats = {
-            'users': users_col.count_documents({}),
-            'movies': movies_col.count_documents({})
-        }
+        stats = {'users': users_col.count_documents({}), 'movies': movies_col.count_documents({})}
         return render_template_string(ADMIN_DASHBOARD_HTML, stats=stats, config=config)
 
-# বটের সার্চের জন্য মুভি সিলেকশন পেজ
 @app.route('/admin/bot_select')
 def bot_select_page():
     query = request.args.get('q')
@@ -639,6 +616,28 @@ COMMON_STYLE = """
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
     .logo-img { height: 40px; width: 40px; border-radius: 50%; object-fit: cover; margin-right: 10px; border: 1px solid var(--neon); }
 
+    /* PREMIUM SEARCH UI CSS */
+    .search-results-container { 
+        background: #161b22; border-radius: 10px; border: 1px solid #30363d; 
+        max-height: 450px; overflow-y: auto; padding: 10px; margin-top: 10px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    .search-item { 
+        display: flex; align-items: center; padding: 12px; margin-bottom: 10px;
+        background: #0d1117; border-radius: 10px; cursor: pointer; 
+        border: 1px solid transparent; transition: 0.3s ease;
+    }
+    .search-item:hover { border-color: var(--duple); background: #1c2128; transform: translateX(5px); }
+    .search-item img { width: 60px; height: 90px; object-fit: cover; border-radius: 8px; margin-right: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+    .search-info { flex-grow: 1; }
+    .search-info b { display: block; color: var(--duple); font-size: 16px; margin-bottom: 4px; }
+    .search-info p { margin: 0; font-size: 13px; color: #8b949e; }
+    .search-meta { display: flex; gap: 10px; margin-top: 5px; }
+    .search-meta span { font-size: 11px; padding: 2px 8px; border-radius: 5px; background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+    .search-badge { font-size: 10px; padding: 3px 8px; border-radius: 5px; font-weight: bold; text-transform: uppercase; margin-left: auto; }
+    .badge-movie { background: rgba(35, 134, 54, 0.2); color: #3fb950; border: 1px solid #238636; }
+    .badge-tv { background: rgba(31, 111, 235, 0.2); color: #58a6ff; border: 1px solid #1f6feb; }
+
     @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
 
     @media (max-width: 768px) {
@@ -792,28 +791,60 @@ ADMIN_ADD_HTML = f"<!DOCTYPE html><html><head><title>Add Content</title><link re
     <h3>➕ Add New Movie/TV Show</h3><hr>
     <div class="row">
         <div class="col-md-6">
-            <div class="admin-card position-relative">
-                <h5>🔍 TMDb Search (with Poster)</h5>
-                <div class="input-group mb-2"><input id="tmdb_search_input" class="form-control" placeholder="Search..."><button class="btn btn-primary" onclick="searchTMDB()">Search</button></div>
-                <div id="search_results_box" class="search-results-container" style="position:static; display:none; max-height:300px;"></div>
-                <hr>
-                <h5>🔗 Fetch by ID</h5>
-                <div class="input-group mb-3"><input id="url_in" class="form-control" placeholder="IMDb Link or TMDb ID..."><button class="btn btn-secondary" onclick="fetchData()">Fetch</button></div>
+            <div class="admin-card position-relative" style="background:#1f2833; border: 1px solid #45a29e; color:#fff;">
+                <h5 class="text-info">🔍 Premium TMDb Search</h5>
+                <div class="input-group mb-2">
+                    <input id="tmdb_search_input" class="form-control bg-dark text-white border-info" placeholder="Enter movie or show name...">
+                    <button class="btn btn-info" onclick="searchTMDB()">Search</button>
+                </div>
+                <div id="search_results_box" class="search-results-container" style="display:none;"></div>
+                <hr style="border-color:#45a29e;">
+                <h5 class="text-secondary">🔗 Fetch by ID</h5>
+                <div class="input-group mb-3">
+                    <input id="url_in" class="form-control bg-dark text-white border-secondary" placeholder="IMDb Link or TMDb ID...">
+                    <button class="btn btn-secondary" onclick="fetchData()">Fetch</button>
+                </div>
             </div>
         </div>
         <div class="col-md-6">
-            <div class="admin-card">
+            <div class="admin-card" style="background:#1f2833; border: 1px solid #45a29e; color:#fff;">
                 <form action="/admin/manual_add" method="POST">
-                    <input id="f_title" name="title" class="form-control mb-2" placeholder="Title" required>
-                    <input id="f_id" name="tmdb_id" class="form-control mb-2" placeholder="TMDB ID" required>
-                    <select id="f_type" name="type" class="form-control mb-2"><option value="movie">Movie</option><option value="tv">TV Series</option></select>
-                    <select id="f_cat" name="category" class="form-control mb-2">{% for cat in categories %}<option value="{{cat}}">{{cat}}</option>{% endfor %}</select>
-                    <input id="f_year" name="year" class="form-control mb-2" placeholder="Year">
-                    <input id="f_rating" name="rating" class="form-control mb-2" placeholder="Rating">
-                    <input id="f_poster" name="poster" class="form-control mb-2" placeholder="Poster URL">
-                    <input id="f_trailer" name="trailer" class="form-control mb-2" placeholder="Trailer Link">
-                    <textarea id="f_story" name="story" class="form-control mb-2" placeholder="Storyline" rows="3"></textarea>
-                    <button class="btn btn-success w-100">Save Metadata</button>
+                    <label class="small text-info">Title</label>
+                    <input id="f_title" name="title" class="form-control bg-dark text-white border-secondary mb-2" placeholder="Title" required>
+                    <label class="small text-info">TMDb ID</label>
+                    <input id="f_id" name="tmdb_id" class="form-control bg-dark text-white border-secondary mb-2" placeholder="TMDB ID" required>
+                    <div class="row">
+                        <div class="col-6">
+                            <label class="small text-info">Type</label>
+                            <select id="f_type" name="type" class="form-control bg-dark text-white border-secondary mb-2">
+                                <option value="movie">Movie</option>
+                                <option value="tv">TV Series</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="small text-info">Category</label>
+                            <select id="f_cat" name="category" class="form-control bg-dark text-white border-secondary mb-2">
+                                {% for cat in categories %}<option value="{{cat}}">{{cat}}</option>{% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-6">
+                            <label class="small text-info">Year</label>
+                            <input id="f_year" name="year" class="form-control bg-dark text-white border-secondary mb-2" placeholder="Year">
+                        </div>
+                        <div class="col-6">
+                            <label class="small text-info">Rating</label>
+                            <input id="f_rating" name="rating" class="form-control bg-dark text-white border-secondary mb-2" placeholder="Rating">
+                        </div>
+                    </div>
+                    <label class="small text-info">Poster URL</label>
+                    <input id="f_poster" name="poster" class="form-control bg-dark text-white border-secondary mb-2" placeholder="Poster URL">
+                    <label class="small text-info">Trailer Link</label>
+                    <input id="f_trailer" name="trailer" class="form-control bg-dark text-white border-secondary mb-2" placeholder="Trailer Link">
+                    <label class="small text-info">Storyline</label>
+                    <textarea id="f_story" name="story" class="form-control bg-dark text-white border-secondary mb-2" placeholder="Storyline" rows="3"></textarea>
+                    <button class="btn btn-info w-100 mt-2 fw-bold">🚀 Save Content Metadata</button>
                 </form>
             </div>
         </div>
@@ -822,21 +853,42 @@ ADMIN_ADD_HTML = f"<!DOCTYPE html><html><head><title>Add Content</title><link re
 <script>
 function searchTMDB() {
     let q = $('#tmdb_search_input').val(); if(!q) return;
-    $('#search_results_box').html('<div class="p-3 text-center">Searching...</div>').show();
+    $('#search_results_box').html('<div class="p-3 text-center text-info"><div class="spinner-border spinner-border-sm"></div> Searching...</div>').show();
     $.post('/admin/search_tmdb', {query: q}, function(data) {
         let h = '';
         data.forEach(i => {
             if(i.media_type=='movie' || i.media_type=='tv') {
                 let poster = i.poster_path ? 'https://image.tmdb.org/t/p/w92' + i.poster_path : 'https://via.placeholder.com/92x138?text=No+Img';
-                h += `<div class="search-item" onclick="selectFromSearch('${i.media_type}', '${i.id}')"><img src="${poster}"><div class="info"><b>[${i.media_type.toUpperCase()}] ${i.title || i.name}</b><small>Release: ${(i.release_date || i.first_air_date || 'N/A').substring(0,4)}</small></div></div>`;
+                let date = (i.release_date || i.first_air_date || 'N/A').substring(0,4);
+                let badgeClass = i.media_type == 'movie' ? 'badge-movie' : 'badge-tv';
+                
+                h += `<div class="search-item" onclick="selectFromSearch('${i.media_type}', '${i.id}')">
+                        <img src="${poster}">
+                        <div class="search-info">
+                            <b>${i.title || i.name}</b>
+                            <div class="search-meta">
+                                <span>📅 ${date}</span>
+                                <span>⭐ ${i.vote_average || '0'}</span>
+                            </div>
+                        </div>
+                        <span class="search-badge ${badgeClass}">${i.media_type}</span>
+                      </div>`;
             }
         });
-        $('#search_results_box').html(h || '<div class="p-3 text-center">No results</div>');
+        $('#search_results_box').html(h || '<div class="p-3 text-center">No results found</div>');
     });
 }
-function selectFromSearch(t, id) { $('#f_type').val(t); $('#url_in').val(id); $('#search_results_box').hide(); fetchData(); }
+function selectFromSearch(t, id) { 
+    $('#f_type').val(t); 
+    $('#url_in').val(id); 
+    $('#search_results_box').fadeOut(); 
+    fetchData(); 
+}
 function fetchData() {
+    let fetchBtn = $('.btn-secondary');
+    fetchBtn.html('Fetching...').prop('disabled', true);
     $.post('/admin/fetch_info', {url: $('#url_in').val(), type: $('#f_type').val()}, function(d) {
+        fetchBtn.html('Fetch').prop('disabled', false);
         if(d.error) return alert(d.error);
         $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year);
         $('#f_rating').val(d.rating); $('#f_poster').val(d.poster); $('#f_trailer').val(d.trailer);
@@ -890,7 +942,6 @@ EDIT_HTML = f"<!DOCTYPE html><html><head><title>Edit Content</title><link rel='s
 
 LOGIN_HTML = """<!DOCTYPE html><html><head><title>Admin Login</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'></head><body class='bg-dark d-flex align-items-center' style='height:100vh;'><div class='card p-4 mx-auto shadow-lg' style='width:340px;'><h4 class='text-center'>ADMIN LOGIN</h4><hr><form method='POST'><input name='u' class='form-control mb-2' placeholder='User'><input name='p' type='password' class='form-control mb-3' placeholder='Pass'><button class='btn btn-primary w-100'>Login</button></form></div></body></html>"""
 
-# বটের মুভি সিলেকশন পেজের HTML (আধুনিক এবং সহজ)
 BOT_SELECT_HTML = """
 <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Select Content</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>
 <style>
@@ -917,8 +968,6 @@ BOT_SELECT_HTML = """
     {% endfor %}
     <p class="text-center small mt-4">মুভিটির ওপর ক্লিক করলে সরাসরি টেলিগ্রাম বটে ফিরে যাবেন।</p>
 </body></html>"""
-
-# ================== রান করার অংশ ==================
 
 if __name__ == '__main__':
     threading.Thread(target=init_bot_service, daemon=True).start()
