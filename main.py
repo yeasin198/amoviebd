@@ -110,7 +110,7 @@ def register_handlers(bot_inst):
             bot_inst.clear_step_handler_by_chat_id(chat_id=message.chat.id)
             bot_inst.reply_to(message, "✅ বর্তমান আপলোড প্রসেসটি বাতিল করা হয়েছে।")
         else:
-            bot_inst.reply_to(message, "ℹ️ কোনো প্রসেস বর্তমানে রানিং নেই।")
+            bot_inst.reply_to(message, "ℹ️ বর্তমানে কোনো প্রসেস রানিং নেই।")
 
     @bot_inst.message_handler(commands=['stats'])
     def stats(message):
@@ -137,6 +137,39 @@ def register_handlers(bot_inst):
             except: pass
         bot_inst.send_message(message.chat.id, f"✅ {count} জন ইউজারের কাছে পাঠানো হয়েছে।")
 
+    # --- নতুন কমান্ড: লিঙ্ক দিয়ে সরাসরি অ্যাড ---
+    @bot_inst.message_handler(commands=['addlink'])
+    def add_by_link(message):
+        config = get_config()
+        if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
+        url_input = message.text.replace('/addlink', '').strip()
+        if not url_input:
+            bot_inst.reply_to(message, "⚠️ IMDb বা TMDb লিঙ্কটি দিন।\nযেমন: `/addlink https://www.imdb.com/title/tt15327088/`", parse_mode="Markdown")
+            return
+        
+        tmdb_api = config.get('TMDB_API_KEY')
+        tmdb_id, media_type = None, "movie"
+        imdb_match = re.search(r'tt\d+', url_input)
+        tmdb_match = re.search(r'tmdb.org/(movie|tv)/(\d+)', url_input)
+
+        try:
+            if imdb_match:
+                imdb_id = imdb_match.group(0)
+                res = requests.get(f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={tmdb_api}&external_source=imdb_id").json()
+                if res.get('movie_results'): tmdb_id, media_type = res['movie_results'][0]['id'], "movie"
+                elif res.get('tv_results'): tmdb_id, media_type = res['tv_results'][0]['id'], "tv"
+            elif tmdb_match:
+                media_type, tmdb_id = tmdb_match.group(1), tmdb_match.group(2)
+            
+            if tmdb_id:
+                bot_inst.reply_to(message, f"🎯 লিঙ্ক ডিটেক্ট করা হয়েছে! (Type: {media_type.upper()}) প্রসেস শুরু হচ্ছে...")
+                # সরাসরি সিলেকশন লজিক ট্রিগার
+                start_flow(message, media_type, tmdb_id, message.from_user.id)
+            else:
+                bot_inst.reply_to(message, "❌ লিঙ্ক থেকে কোনো মুভি বা শো খুঁজে পাওয়া যায়নি।")
+        except:
+            bot_inst.reply_to(message, "❌ লিঙ্ক প্রসেস করতে ভুল হয়েছে।")
+
     @bot_inst.message_handler(commands=['post'])
     def post_search(message):
         config = get_config()
@@ -145,36 +178,16 @@ def register_handlers(bot_inst):
             return
         query = message.text.replace('/post', '').strip()
         if not query:
-            bot_inst.reply_to(message, "⚠️ মুভির নাম বা IMDb/TMDb লিঙ্ক লিখুন। (যেমন: /post Leo বা লিঙ্ক)")
+            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। (যেমন: /post Leo)")
             return
-
+        
         tmdb_api = config.get('TMDB_API_KEY')
-        tmdb_id, media_type = None, "movie"
-
-        # লিঙ্ক ডিটেকশন লজিক (IMDb বা TMDb লিঙ্ক দিলে সরাসরি ক্যাচ করবে)
-        imdb_match = re.search(r'tt\d+', query)
-        tmdb_match = re.search(r'tmdb.org/(movie|tv)/(\d+)', query)
-
-        if imdb_match:
-            imdb_id = imdb_match.group(0)
-            res = requests.get(f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={tmdb_api}&external_source=imdb_id").json()
-            if res.get('movie_results'): tmdb_id, media_type = res['movie_results'][0]['id'], "movie"
-            elif res.get('tv_results'): tmdb_id, media_type = res['tv_results'][0]['id'], "tv"
-        elif tmdb_match:
-            media_type, tmdb_id = tmdb_match.group(1), tmdb_match.group(2)
-
-        if tmdb_id:
-            bot_inst.reply_to(message, f"✅ লিঙ্ক ডিটেক্ট করা হয়েছে! প্রসেস শুরু হচ্ছে...")
-            handle_initial_flow(message, media_type, tmdb_id, message.from_user.id)
-            return
-
-        # লিঙ্ক না হলে সার্চ করবে
         url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_api}&query={query}"
         try: res = requests.get(url).json().get('results', [])
         except: res = []
 
         if not res:
-            bot_inst.reply_to(message, "❌ কিছুই পাওয়া যায়নি। মুভির নাম সঠিক লিখুন বা সরাসরি লিঙ্ক দিন।")
+            bot_inst.reply_to(message, "❌ কিছুই পাওয়া যায়নি।")
             return
 
         markup = types.InlineKeyboardMarkup()
@@ -189,9 +202,9 @@ def register_handlers(bot_inst):
     def handle_selection(call):
         bot_inst.answer_callback_query(call.id) # বাটন হ্যাং ফিক্স
         _, m_type, m_id = call.data.split('_')
-        handle_initial_flow(call.message, m_type, m_id, call.from_user.id)
+        start_flow(call.message, m_type, m_id, call.from_user.id)
 
-    def handle_initial_flow(message, m_type, m_id, user_id):
+    def start_flow(message, m_type, m_id, user_id):
         admin_states[user_id] = {'type': m_type, 'tmdb_id': m_id}
         if m_type == 'movie':
             markup = types.InlineKeyboardMarkup()
@@ -227,7 +240,7 @@ def register_handlers(bot_inst):
 
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('lang_m_'))
     def movie_qual(call):
-        bot_inst.answer_callback_query(call.id) # বাটন হ্যাং ফিক্স
+        bot_inst.answer_callback_query(call.id)
         _, _, mid, lang = call.data.split('_')
         markup = types.InlineKeyboardMarkup()
         for q in ["480p", "720p", "1080p", "4K", "Custom"]:
@@ -236,7 +249,7 @@ def register_handlers(bot_inst):
 
     @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('qual_m_'))
     def movie_file_ask(call):
-        bot_inst.answer_callback_query(call.id) # বাটন হ্যাং ফিক্স
+        bot_inst.answer_callback_query(call.id)
         _, _, mid, lang, qual = call.data.split('_')
         if qual == "Custom":
             admin_states[call.from_user.id].update({'lang': lang})
@@ -381,7 +394,7 @@ def login():
             return redirect(url_for('admin'))
     return render_template_string(LOGIN_HTML)
 
-# Logout বাগ ফিক্স
+# Logout বাগ ফিক্স করা হয়েছে
 @app.route('/logout')
 def logout():
     session.clear()
@@ -560,20 +573,20 @@ COMMON_STYLE = """
     .neon-card { background: var(--card); border: 1px solid #45a29e; border-radius: 12px; transition: 0.5s; overflow: hidden; position: relative; }
     .neon-card:hover { transform: translateY(-8px); box-shadow: 0 0 20px var(--neon); border-color: var(--neon); }
     .btn-neon { background: var(--neon); color: var(--dark); font-weight: 600; border-radius: 6px; padding: 10px 20px; text-decoration: none; border: none; transition: 0.3s; display: inline-block; cursor:pointer;}
-    .btn-neon:hover { background: #45a29e; color: #fff; box-shadow: 0 0 15px var(--neon); }
-    .cat-pill { padding: 6px 16px; border-radius: 20px; border: 1px solid var(--neon); color: var(--neon); text-decoration: none; margin: 4px; display: inline-block; font-size: 13px; transition: 0.3s; }
-    .cat-pill.active, .cat-pill:hover { background: var(--neon); color: var(--dark); font-weight: bold; }
     .sidebar { width: 260px; height: 100vh; background: #1f2833; position: fixed; border-right: 2px solid var(--neon); }
-    .sidebar a { padding: 12px 25px; text-decoration: none; font-size: 15px; color: #fff; display: block; transition: 0.3s; }
+    .sidebar a { padding: 12px 25px; text-decoration: none; font-size: 15px; color: #fff; display: block; }
     .sidebar a:hover, .sidebar a.active { background: var(--neon); color: var(--dark); font-weight: bold; }
     .main-content { margin-left: 260px; padding: 30px; min-height: 100vh; }
     .admin-card { background: white; color: #333; border-radius: 12px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.3); margin-bottom: 25px; }
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
+    .cat-pill { padding: 6px 16px; border-radius: 20px; border: 1px solid var(--neon); color: var(--neon); text-decoration: none; margin: 4px; display: inline-block; font-size: 13px; }
+    .cat-pill.active { background: var(--neon); color: var(--dark); }
+    input, select, textarea { width:100%; padding:10px; margin-bottom:15px; background:#222; border: 1px solid #444; color:#fff; border-radius:5px; box-sizing: border-box; }
 </style>
 """
 
-HOME_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>{{{{config.SITE_NAME}}}}</title><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + """
-<nav class="navbar navbar-dark sticky-top mb-4"><div class="container">
+HOME_HTML = f"<!DOCTYPE html><html><head><title>{{{{config.SITE_NAME}}}}</title><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css'>{COMMON_STYLE}</head><body>" + """
+<nav class="navbar navbar-dark sticky-top mb-4" style="background:var(--card); border-bottom:2px solid var(--neon);"><div class="container">
     <a class="navbar-brand fw-bold d-flex align-items-center text-info" href="/">
         <img src="{{config.SITE_LOGO}}" style="width:40px; height:40px; border-radius:50%; margin-right:10px;"> {{config.SITE_NAME}}
     </a>
@@ -647,7 +660,7 @@ DETAILS_HTML = f"<!DOCTYPE html><html><head><meta name='viewport' content='width
 
 ADMIN_SIDEBAR = """
 <div class="sidebar">
-    <div style="text-align:center; padding:20px;"><img src="{{config.SITE_LOGO}}" width="60" style="border-radius:50%; border:2px solid var(--neon);"></div>
+    <div style="text-align:center; padding:20px; border-bottom:1px solid #333;"><img src="{{config.SITE_LOGO}}" width="60" style="border-radius:50%; border:2px solid var(--neon);"></div>
     <a href="/admin?tab=dashboard" class="{% if not request.args.get('tab') or request.args.get('tab')=='dashboard' %}active{% endif %}">📊 Dashboard</a>
     <a href="/admin?tab=add" class="{% if request.args.get('tab')=='add' %}active{% endif %}">➕ Add Content</a>
     <a href="/admin?tab=movies" class="{% if request.args.get('tab')=='movies' %}active{% endif %}">🎬 Movie List</a>
@@ -661,64 +674,63 @@ ADMIN_DASHBOARD_HTML = f"<!DOCTYPE html><html><head><title>Admin</title>{COMMON_
 <div class="main-content">
     <h2>📊 Dashboard Overview</h2>
     <div style="display:flex; gap:20px;">
-        <div style="background:var(--card); padding:30px; border-radius:10px; flex:1; text-align:center;"><h1>{{stats.users}}</h1>Users</div>
-        <div style="background:var(--card); padding:30px; border-radius:10px; flex:1; text-align:center;"><h1>{{stats.movies}}</h1>Movies</div>
+        <div style="background:var(--card); padding:30px; border-radius:10px; flex:1; text-align:center;"><h1>{{stats.users}}</h1><p>Bot Users</p></div>
+        <div style="background:var(--card); padding:30px; border-radius:10px; flex:1; text-align:center;"><h1>{{stats.movies}}</h1><p>Total Movies</p></div>
     </div>
 </div></body></html>"""
 
 ADMIN_ADD_HTML = f"<!DOCTYPE html><html><head><title>Add</title><script src='https://code.jquery.com/jquery-3.6.0.min.js'></script>{COMMON_STYLE}</head><body>" + ADMIN_SIDEBAR + """
 <div class="main-content">
-    <h3>➕ Add New Content</h3>
-    <div class="admin-card"><input id="url_in" placeholder="IMDb Link, TMDb ID or Name" style="width:100%; padding:10px; border:1px solid #ddd; margin-bottom:10px;"><button onclick="fetchData()" class="btn-neon" style="width:100%;">Fetch Info</button></div>
+    <h3>➕ Add New Movie/TV Show</h3>
+    <div class="admin-card"><input id="url_in" placeholder="IMDb Link, TMDb ID or Name" style="color:#000; background:#eee;"><button onclick="fetchData()" class="btn-neon" style="width:100%; color:#000;">Fetch Info</button></div>
     <form action="/admin/manual_add" method="POST" class="admin-card">
-        <input id="f_title" name="title" placeholder="Title" style="width:100%; padding:10px; margin-bottom:10px;">
-        <input id="f_id" name="tmdb_id" placeholder="TMDb ID" style="width:100%; padding:10px; margin-bottom:10px;">
-        <select name="type" id="f_type" style="width:100%; padding:10px; margin-bottom:10px;"><option value="movie">Movie</option><option value="tv">TV</option></select>
-        <select name="category" style="width:100%; padding:10px; margin-bottom:10px;">{% for c in categories %}<option value="{{c}}">{{c}}</option>{% endfor %}</select>
-        <input id="f_year" name="year" placeholder="Year" style="width:100%; padding:10px; margin-bottom:10px;">
-        <input id="f_rating" name="rating" placeholder="Rating" style="width:100%; padding:10px; margin-bottom:10px;">
-        <input id="f_poster" name="poster" placeholder="Poster URL" style="width:100%; padding:10px; margin-bottom:10px;">
-        <input id="f_trailer" name="trailer" placeholder="Trailer Link" style="width:100%; padding:10px; margin-bottom:10px;">
-        <textarea id="f_story" name="story" placeholder="Storyline" rows="4" style="width:100%; padding:10px; margin-bottom:10px;"></textarea>
-        <button type="submit" class="btn-neon" style="width:100%;">Save Content</button>
+        <input id="f_title" name="title" placeholder="Title"><input id="f_id" name="tmdb_id" placeholder="TMDb ID">
+        <select name="type" id="f_type"><option value="movie">Movie</option><option value="tv">TV Show</option></select>
+        <select name="category">{% for c in categories %}<option value="{{c}}">{{c}}</option>{% endfor %}</select>
+        <input id="f_year" name="year" placeholder="Year"><input id="f_rating" name="rating" placeholder="Rating">
+        <input id="f_poster" name="poster" placeholder="Poster URL"><input id="f_trailer" name="trailer" placeholder="Trailer Link">
+        <textarea id="f_story" name="story" placeholder="Storyline" rows="4"></textarea>
+        <button type="submit" class="btn-neon" style="width:100%; color:#000;">Save Content</button>
     </form>
 </div>
 <script>
 function fetchData() {
     $.post('/admin/fetch_info', {url: $('#url_in').val()}, function(d) {
-        $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year);
-        $('#f_rating').val(d.rating); $('#f_poster').val(d.poster); $('#f_trailer').val(d.trailer);
-        $('#f_story').val(d.story); $('#f_type').val(d.type);
+        if(d.error) alert("Not found");
+        $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year); $('#f_rating').val(d.rating); $('#f_poster').val(d.poster); $('#f_trailer').val(d.trailer); $('#f_story').val(d.story); $('#f_type').val(d.type);
     });
 }
 </script></body></html>"""
 
 ADMIN_MOVIES_HTML = f"<!DOCTYPE html><html><head><title>Library</title>{COMMON_STYLE}</head><body>" + ADMIN_SIDEBAR + """
 <div class="main-content">
-    <h3>🎬 Library</h3>
-    <form style="display:flex; margin-bottom:20px;"><input name="q" placeholder="Search..." style="width:100%; padding:10px;" value="{{q}}"><button type="submit" class="btn-neon">Search</button></form>
+    <h3>🎬 Content Library</h3>
+    <form style="display:flex; margin-bottom:20px;"><input name="q" placeholder="Search..." style="margin:0;"><button type="submit" class="btn-neon" style="color:#000;">Search</button></form>
     <div class="admin-card"><table style="width:100%; border-collapse:collapse;">
         {% for m in movies %}
-        <tr style="border-bottom:1px solid #ddd;"><td style="padding:10px;"><img src="{{m.poster}}" width="40"></td><td>{{m.title}} ({{m.year}})</td><td><a href="/admin/edit/{{m.tmdb_id}}">Edit</a> | <a href="/delete/{{m.tmdb_id}}" style="color:red;" onclick="return confirm('Delete?')">Del</a></td></tr>
+        <tr style="border-bottom:1px solid #ddd;"><td style="padding:10px;"><img src="{{m.poster}}" width="45" style="border-radius:4px;"></td><td>{{m.title}} ({{m.year}})</td><td><a href="/admin/edit/{{m.tmdb_id}}">Edit</a> | <a href="/delete/{{m.tmdb_id}}" style="color:red;" onclick="return confirm('Delete?')">Del</a></td></tr>
         {% endfor %}
     </table></div>
 </div></body></html>"""
 
 ADMIN_SETTINGS_HTML = f"<!DOCTYPE html><html><head><title>Settings</title>{COMMON_STYLE}</head><body>" + ADMIN_SIDEBAR + """
 <div class="main-content">
-    <h3>⚙️ Settings</h3>
+    <h3>⚙️ Portal & Bot Settings</h3>
     <form action="/save_config" method="POST" class="admin-card">
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
-            <div><label>Site Name</label><input name="site_name" value="{{config.SITE_NAME}}" style="width:100%; padding:10px;"></div>
-            <div><label>Bot Token</label><input name="token" value="{{config.BOT_TOKEN}}" style="width:100%; padding:10px;"></div>
-            <div><label>TMDB API Key</label><input name="tmdb" value="{{config.TMDB_API_KEY}}" style="width:100%; padding:10px;"></div>
-            <div><label>Admin ID</label><input name="admin_id" value="{{config.ADMIN_ID}}" style="width:100%; padding:10px;"></div>
-            <div><label>Storage Channel</label><input name="channel_id" value="{{config.STORAGE_CHANNEL_ID}}" style="width:100%; padding:10px;"></div>
-            <div><label>Shortener Domain</label><input name="s_url" value="{{config.SHORTENER_URL}}" style="width:100%; padding:10px;"></div>
-            <div><label>Shortener API</label><input name="s_api" value="{{config.SHORTENER_API}}" style="width:100%; padding:10px;"></div>
-            <div><label>Auto Delete (Sec)</label><input name="delete_time" type="number" value="{{config.AUTO_DELETE_TIME}}" style="width:100%; padding:10px;"></div>
+            <div><label>Site Name</label><input name="site_name" value="{{config.SITE_NAME}}"></div>
+            <div><label>Site Logo URL</label><input name="site_logo" value="{{config.SITE_LOGO}}"></div>
+            <div><label>Site URL</label><input name="site_url" value="{{config.SITE_URL}}"></div>
+            <div><label>Bot Token</label><input name="token" value="{{config.BOT_TOKEN}}"></div>
+            <div><label>TMDB API Key</label><input name="tmdb" value="{{config.TMDB_API_KEY}}"></div>
+            <div><label>Admin TG ID</label><input name="admin_id" value="{{config.ADMIN_ID}}"></div>
+            <div><label>Storage Channel ID</label><input name="channel_id" value="{{config.STORAGE_CHANNEL_ID}}"></div>
+            <div><label>Shortener Domain</label><input name="s_url" value="{{config.SHORTENER_URL}}"></div>
+            <div><label>Shortener API</label><input name="s_api" value="{{config.SHORTENER_API}}"></div>
+            <div><label>Auto Delete (Sec)</label><input name="delete_time" type="number" value="{{config.AUTO_DELETE_TIME}}"></div>
+            <div><label>Protect (on/off)</label><input name="protect" value="{{config.PROTECT_CONTENT}}"></div>
         </div>
-        <button type="submit" class="btn-neon" style="width:100%; margin-top:20px;">Save All Settings</button>
+        <button type="submit" class="btn-neon" style="width:100%; color:#000; margin-top:10px;">Save All Settings</button>
     </form>
 </div></body></html>"""
 
@@ -727,22 +739,22 @@ EDIT_HTML = f"<!DOCTYPE html><html><head><title>Edit</title>{COMMON_STYLE}</head
     <h3>✏️ Edit Content</h3>
     <div style="display:flex; gap:20px;">
         <form action="/admin/update" method="POST" class="admin-card" style="flex:1;">
-            <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}"><label>Title</label><input name="title" value="{{m.title}}" style="width:100%; padding:10px; margin-bottom:10px;">
-            <label>Category</label><select name="category" style="width:100%; padding:10px; margin-bottom:10px;">{% for c in categories %}<option value="{{c}}" {% if m.category==c %}selected{% endif %}>{{c}}</option>{% endfor %}</select>
-            <label>Rating</label><input name="rating" value="{{m.rating}}" style="width:100%; padding:10px; margin-bottom:10px;"><label>Story</label><textarea name="story" rows="5" style="width:100%; padding:10px; margin-bottom:10px;">{{m.story}}</textarea>
-            <button type="submit" class="btn-neon" style="width:100%;">Update</button>
+            <input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}"><label>Title</label><input name="title" value="{{m.title}}">
+            <label>Category</label><select name="category">{% for c in categories %}<option value="{{c}}" {% if m.category==c %}selected{% endif %}>{{c}}</option>{% endfor %}</select>
+            <label>Rating</label><input name="rating" value="{{m.rating}}"><label>Year</label><input name="year" value="{{m.year}}"><label>Story</label><textarea name="story" rows="5">{{m.story}}</textarea>
+            <button type="submit" class="btn-neon" style="width:100%; color:#000;">Update Metadata</button>
         </form>
         <div class="admin-card" style="flex:1;">
-            <h5>Add Link</h5><form action="/admin/add_file" method="POST"><input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}"><input name="quality" placeholder="Quality" style="width:100%; padding:10px; margin-bottom:10px;"><input name="file_id" placeholder="Msg ID" style="width:100%; padding:10px; margin-bottom:10px;"><button type="submit" class="btn-neon" style="width:100%;">Add Link</button></form>
+            <h5>Add Link</h5><form action="/admin/add_file" method="POST"><input type="hidden" name="tmdb_id" value="{{m.tmdb_id}}"><input name="quality" placeholder="Quality (e.g. 720p Bangla)"><input name="file_id" placeholder="Msg ID"><button type="submit" class="btn-neon" style="color:#000;">Add Link</button></form>
             <h5 style="margin-top:20px;">Current Links:</h5>
-            {% for f in m.files %}<div style="padding:10px; background:#f5f5f5; margin-bottom:5px; border-radius:5px; display:flex; justify-content:space-between;">{{f.quality}} <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" style="color:red;">X</a></div>{% endfor %}
+            {% for f in m.files %}<div style="padding:10px; background:#f5f5f5; margin-bottom:5px; border-radius:5px; display:flex; justify-content:space-between;">{{f.quality}} (ID: {{f.file_id}}) <a href="/admin/delete_file/{{m.tmdb_id}}/{{f.file_id}}" style="color:red;">X</a></div>{% endfor %}
         </div>
     </div>
 </div></body></html>"""
 
 LOGIN_HTML = f"<!DOCTYPE html><html><head><title>Login</title>{COMMON_STYLE}</head><body style='display:flex; justify-content:center; align-items:center; height:100vh;'>" + """
 <form method="POST" class="admin-card" style="width:320px;">
-    <h3 style="text-align:center;">Admin Login</h3><input name="u" placeholder="User" style="width:100%; padding:10px; margin-bottom:10px;"><input name="p" type="password" placeholder="Pass" style="width:100%; padding:10px; margin-bottom:10px;"><button type="submit" class="btn-neon" style="width:100%;">Login</button>
+    <h3 style="text-align:center;">Admin Login</h3><input name="u" placeholder="User"><input name="p" type="password" placeholder="Pass"><button type="submit" class="btn-neon" style="width:100%; color:#000;">Login</button>
 </form></body></html>"""
 
 # ================== রান করার অংশ ==================
