@@ -4,3 +4,8 @@ motor
 flask
 requests
 gunicorn
+pyTelegramBotAPI
+requests
+pymongo
+flask
+gunicorn
