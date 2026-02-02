@@ -74,7 +74,7 @@ def auto_delete_task(bot_inst, chat_id, msg_id, delay):
             bot_inst.delete_message(chat_id, msg_id)
         except: pass
 
-# --- [টেলিগ্রাম বট হ্যান্ডলার - সকল লজিক এখানে মার্জ করা হয়েছে] ---
+# --- [টেলিগ্রাম বট হ্যান্ডলার] ---
 def register_handlers(bot_inst):
     if not bot_inst: return
 
@@ -86,7 +86,6 @@ def register_handlers(bot_inst):
         full_name = f"{first_name} {last_name}".strip()
         username = f"@{message.from_user.username}" if message.from_user.username else "N/A"
         
-        # ডাটাবেসে ইউজার সেভ/আপডেট করা
         users_col.update_one(
             {'user_id': uid}, 
             {'$set': {'user_id': uid, 'name': first_name, 'full_name': full_name, 'username': username}}, 
@@ -94,43 +93,19 @@ def register_handlers(bot_inst):
         )
             
         config = get_config()
-        args = message.text.split()
 
-        # ডিপ লিঙ্কিং লজিক (ফাইল ডাউনলোড বা এডমিন সিলেকশন)
-        if len(args) > 1:
-            cmd_data = args[1]
+        # Deep Linking Logic
+        if len(message.text.split()) > 1:
+            cmd_data = message.text.split()[1]
             
-            # ১. ফাইল ডাউনলোড লজিক (এটি সবার জন্য কাজ করবে)
-            if cmd_data.startswith('dl_'):
-                file_to_send = cmd_data.replace('dl_', '')
-                storage_id = config.get('STORAGE_CHANNEL_ID')
-                
-                if not storage_id:
-                    bot_inst.send_message(message.chat.id, "❌ স্টোরেজ চ্যানেল কনফিগার করা নেই।")
-                    return
-
-                protect = True if config.get('PROTECT_CONTENT') == 'on' else False
-                try:
-                    # স্টোরেজ চ্যানেল থেকে ফাইল কপি করা
-                    sent_msg = bot_inst.copy_message(message.chat.id, int(storage_id), int(file_to_send), protect_content=protect)
-                    
-                    delay = int(config.get('AUTO_DELETE_TIME', 0))
-                    if delay > 0:
-                        warn_msg = bot_inst.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
-                        threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, sent_msg.message_id, delay)).start()
-                        threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, warn_msg.message_id, delay)).start()
-                except Exception as e:
-                    bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি বা বটের স্টোরেজ এক্সেস নেই।")
-                return
-
-            # ২. এডমিন মুভি সিলেকশন লজিক (শুধুমাত্র এডমিনের জন্য)
+            # এডমিন সিলেকশন হ্যান্ডলিং
             if cmd_data.startswith('sel_'):
                 if str(uid) != str(config.get('ADMIN_ID')):
                     bot_inst.reply_to(message, "🚫 আপনি এডমিন নন।")
                     return
                 parts = cmd_data.split('_')
                 if len(parts) >= 3:
-                    m_type, m_id = parts[1], parts[2]
+                    _, m_type, m_id = parts[0], parts[1], parts[2]
                     admin_states[uid] = {'type': m_type, 'tmdb_id': m_id, 'temp_files': []}
                     
                     if m_type == 'movie':
@@ -138,9 +113,32 @@ def register_handlers(bot_inst):
                     else:
                         msg = bot_inst.send_message(message.chat.id, "📺 সিজন নম্বর লিখুন (বা /cancel):")
                         bot_inst.register_next_step_handler(msg, get_season)
+                    return
+
+            # ফাইল ডাউনলোড হ্যান্ডলিং (FIXED)
+            if cmd_data.startswith('dl_'):
+                file_to_send = cmd_data.replace('dl_', '')
+                protect = True if config.get('PROTECT_CONTENT') == 'on' else False
+                try:
+                    # ফাইল কপি করা হচ্ছে স্টোরেজ চ্যানেল থেকে ইউজারের ইনবক্সে
+                    sent_msg = bot_inst.copy_message(
+                        chat_id=message.chat.id, 
+                        from_chat_id=int(config['STORAGE_CHANNEL_ID']), 
+                        message_id=int(file_to_send), 
+                        protect_content=protect
+                    )
+                    
+                    delay = int(config.get('AUTO_DELETE_TIME', 0))
+                    if delay > 0:
+                        warn_msg = bot_inst.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে। দ্রুত সেভ করুন!")
+                        threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, sent_msg.message_id, delay)).start()
+                        threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, warn_msg.message_id, delay)).start()
+                except Exception as e:
+                    print(f"Error sending file: {e}")
+                    bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি অথবা বট স্টোরেজ চ্যানেলে নেই।")
                 return
 
-        # ৩. সাধারণ স্বাগতম মেসেজ এবং প্রিমিয়াম প্রোফাইল কার্ড (সবার জন্য)
+        # প্রোফাইল কার্ড এবং স্বাগতম মেসেজ
         welcome_text = (
             f"🎬 *{config.get('SITE_NAME')}* এ আপনাকে স্বাগতম!\n\n"
             f"👤 *আপনার প্রোফাইল তথ্য:*\n"
@@ -222,8 +220,10 @@ def register_handlers(bot_inst):
         
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔍 মুভি সিলেক্ট করুন (লিঙ্ক)", url=selection_url))
-        bot_inst.send_message(message.chat.id, f"🔎 '{query}' এর রেজাল্ট দেখতে নিচের বাটনে ক্লিক করুন।", reply_markup=markup)
+        
+        bot_inst.send_message(message.chat.id, f"🔎 '{query}' এর জন্য রেজাল্ট দেখতে এবং সিলেক্ট করতে নিচের বাটনে ক্লিক করুন।", reply_markup=markup)
 
+    # --- [এডমিন ফ্লো ফাংশনসমূহ] ---
     def ask_movie_lang(message, mid):
         markup = types.InlineKeyboardMarkup()
         for l in ["Bangla", "Hindi", "English", "Multi"]:
@@ -288,6 +288,7 @@ def register_handlers(bot_inst):
         if uid not in admin_states: return
         state = admin_states[uid]
         try:
+            # ফাইলটি স্টোরেজ চ্যানেলে কপি করে রাখা হচ্ছে
             sent_msg = bot_inst.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
             file_label = f"{state.get('lang', '')} {state.get('qual', 'HD')}".strip()
             file_data = {'quality': file_label, 'file_id': sent_msg.message_id}
@@ -299,7 +300,7 @@ def register_handlers(bot_inst):
             
             bot_inst.reply_to(message, f"📥 ফাইল গ্রহণ করা হয়েছে: {file_label}\nএখন কি করতে চান?", reply_markup=markup)
         except Exception as e:
-            bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
+            bot_inst.send_message(message.chat.id, f"❌ এরর: {e}\n(নিশ্চিত করুন বটটি আপনার স্টোরেজ চ্যানেলে এডমিন আছে)")
 
     @bot_inst.callback_query_handler(func=lambda call: call.data == "add_more_qual")
     def add_more_files(call):
@@ -367,7 +368,7 @@ def register_handlers(bot_inst):
         except Exception as e:
             bot_inst.send_message(call.message.chat.id, f"❌ এরর: {e}")
 
-# --- [বট সার্ভিস ইনিশিয়ালাইজেশন] ---
+# --- [বট এবং ফ্লাস্ক সার্ভিস ইনিশিয়ালাইজেশন] ---
 def init_bot_service():
     global bot
     config = get_config()
@@ -388,7 +389,7 @@ def init_bot_service():
             print(f"❌ Bot Initialization Failure: {e}")
     return None
 
-# ================== FLASK ROUTES ==================
+# ================== FLASK ROUTES (WEB PORTAL) ==================
 
 @app.route('/')
 def home():
@@ -627,7 +628,7 @@ def webhook():
         bot.process_new_updates([update])
     return '', 200
 
-# ================== HTML Templates (বিন্দু পরিমান পরিবর্তন ছাড়া) ==================
+# ================== HTML Templates (Same as before) ==================
 
 COMMON_STYLE = """
 <style>
@@ -668,7 +669,6 @@ COMMON_STYLE = """
     .navbar { background: var(--card); border-bottom: 2px solid var(--neon); }
     .logo-img { height: 40px; width: 40px; border-radius: 50%; object-fit: cover; margin-right: 10px; border: 1px solid var(--neon); }
 
-    /* PREMIUM SEARCH UI CSS */
     .search-results-container { 
         background: #161b22; border-radius: 10px; border: 1px solid #30363d; 
         max-height: 450px; overflow-y: auto; padding: 10px; margin-top: 10px;
@@ -913,15 +913,11 @@ function searchTMDB() {
                 let poster = i.poster_path ? 'https://image.tmdb.org/t/p/w92' + i.poster_path : 'https://via.placeholder.com/92x138?text=No+Img';
                 let date = (i.release_date || i.first_air_date || 'N/A').substring(0,4);
                 let badgeClass = i.media_type == 'movie' ? 'badge-movie' : 'badge-tv';
-                
                 h += `<div class="search-item" onclick="selectFromSearch('${i.media_type}', '${i.id}')">
                         <img src="${poster}">
                         <div class="search-info">
                             <b>${i.title || i.name}</b>
-                            <div class="search-meta">
-                                <span>📅 ${date}</span>
-                                <span>⭐ ${i.vote_average || '0'}</span>
-                            </div>
+                            <div class="search-meta"><span>📅 ${date}</span><span>⭐ ${i.vote_average || '0'}</span></div>
                         </div>
                         <span class="search-badge ${badgeClass}">${i.media_type}</span>
                       </div>`;
@@ -930,18 +926,11 @@ function searchTMDB() {
         $('#search_results_box').html(h || '<div class="p-3 text-center">No results found</div>');
     });
 }
-function selectFromSearch(t, id) { 
-    $('#f_type').val(t); 
-    $('#url_in').val(id); 
-    $('#search_results_box').fadeOut(); 
-    fetchData(); 
-}
+function selectFromSearch(t, id) { $('#f_type').val(t); $('#url_in').val(id); $('#search_results_box').fadeOut(); fetchData(); }
 function fetchData() {
-    let fetchBtn = $('.btn-secondary');
-    fetchBtn.html('Fetching...').prop('disabled', true);
+    let fetchBtn = $('.btn-secondary'); fetchBtn.html('Fetching...').prop('disabled', true);
     $.post('/admin/fetch_info', {url: $('#url_in').val(), type: $('#f_type').val()}, function(d) {
-        fetchBtn.html('Fetch').prop('disabled', false);
-        if(d.error) return alert(d.error);
+        fetchBtn.html('Fetch').prop('disabled', false); if(d.error) return alert(d.error);
         $('#f_title').val(d.title); $('#f_id').val(d.tmdb_id); $('#f_year').val(d.year);
         $('#f_rating').val(d.rating); $('#f_poster').val(d.poster); $('#f_trailer').val(d.trailer);
         $('#f_story').val(d.story); $('#f_type').val(d.type); $('#f_cat').val(d.category);
@@ -973,11 +962,11 @@ ADMIN_SETTINGS_HTML = f"<!DOCTYPE html><html><head><title>Settings</title><link 
                 <div class="col-md-6 mb-3"><label>Telegram Bot Token</label><input name="token" class="form-control" value="{{config.BOT_TOKEN}}"></div>
                 <div class="col-md-6 mb-3"><label>TMDb API Key</label><input name="tmdb" class="form-control" value="{{config.TMDB_API_KEY}}"></div>
                 <div class="col-md-6 mb-3"><label>Admin Telegram ID</label><input name="admin_id" class="form-control" value="{{config.ADMIN_ID}}"></div>
-                <div class="col-md-6 mb-3"><label>Storage Channel ID</label><input name="channel_id" class="form-control" value="{{config.STORAGE_CHANNEL_ID}}"></div>
+                <div class="col-md-6 mb-3"><label>Storage Channel ID</label><input name="channel_id" class="form-control" value="{{config.STORAGE_CHANNEL_ID}}" placeholder="-100xxxxxxx"></div>
                 <div class="col-md-6 mb-3"><label>Shortener Domain</label><input name="s_url" class="form-control" value="{{config.SHORTENER_URL}}"></div>
                 <div class="col-md-6 mb-3"><label>Shortener API Key</label><input name="s_api" class="form-control" value="{{config.SHORTENER_API}}"></div>
                 <div class="col-md-6 mb-3"><label>Auto Delete Time (Sec)</label><input name="delete_time" type="number" class="form-control" value="{{config.AUTO_DELETE_TIME}}"></div>
-                <div class="col-md-6 mb-3"><label>Protect Content</label><input name="protect" class="form-control" value="{{config.PROTECT_CONTENT}}"></div>
+                <div class="col-md-6 mb-3"><label>Protect Content (on/off)</label><input name="protect" class="form-control" value="{{config.PROTECT_CONTENT}}"></div>
             </div>
             <button class="btn btn-primary w-100 mt-2">💾 Save Configuration</button>
         </form>
@@ -1024,6 +1013,7 @@ BOT_SELECT_HTML = """
 # ================== MAIN APP START ==================
 
 if __name__ == '__main__':
+    # বটের থ্রেড চালু করা
     threading.Thread(target=init_bot_service, daemon=True).start()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
