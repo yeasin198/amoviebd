@@ -86,7 +86,7 @@ def register_handlers(bot_inst):
         full_name = f"{first_name} {last_name}".strip()
         username = f"@{message.from_user.username}" if message.from_user.username else "N/A"
         
-        # ডাটাবেসে ইউজার সেভ/আপডেট করা
+        # [অটো সেভ] ডাটাবেসে ইউজার সেভ/আপডেট করা
         users_col.update_one(
             {'user_id': uid}, 
             {'$set': {'user_id': uid, 'name': first_name, 'full_name': full_name, 'username': username}}, 
@@ -116,6 +116,12 @@ def register_handlers(bot_inst):
                     return
 
             if cmd_data.startswith('dl_'):
+                # [সিকিউরিটি চেক] ইউজার ডাটাবেসে আছে কি না দেখা
+                user_check = users_col.find_one({'user_id': uid})
+                if not user_check:
+                    bot_inst.reply_to(message, "❌ আপনি আমাদের ডাটাবেসে নিবন্ধিত নন। ফাইল পেতে প্রথমে বটটি /start করুন।")
+                    return
+
                 file_to_send = cmd_data.replace('dl_', '')
                 protect = True if config.get('PROTECT_CONTENT') == 'on' else False
                 try:
@@ -140,7 +146,7 @@ def register_handlers(bot_inst):
             f"🆔 *User ID:* `{uid}`\n"
             f"🌐 *Username:* {username}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন।"
+            f"✅ আপনার আইডি ডাটাবেসে অটো সেভ করা হয়েছে। এখন আপনি ফাইল ডাউনলোড করতে পারবেন।"
         )
 
         markup = types.InlineKeyboardMarkup()
@@ -153,7 +159,6 @@ def register_handlers(bot_inst):
             # প্রোফাইল পিকচার ফেচ করা
             photos = bot_inst.get_user_profile_photos(uid)
             if photos.total_count > 0:
-                # সবচেয়ে বড় সাইজের ছবিটি পাঠানো
                 photo_file_id = photos.photos[0][-1].file_id
                 bot_inst.send_photo(message.chat.id, photo_file_id, caption=welcome_text, parse_mode="Markdown", reply_markup=markup)
             else:
@@ -1012,291 +1017,27 @@ BOT_SELECT_HTML = """
     <p class="text-center small mt-4">মুভিটির ওপর ক্লিক করলে সরাসরি টেলিগ্রাম বটে ফিরে যাবেন।</p>
 </body></html>"""
 
-# ================== UPDATED BOT START COMMAND ==================
+# ================== BOT INITIALIZATION ==================
 
-def register_handlers(bot_inst):
-    if not bot_inst: return
-
-    @bot_inst.message_handler(commands=['start'])
-    def start(message):
-        uid = message.from_user.id
-        first_name = message.from_user.first_name or ""
-        last_name = message.from_user.last_name or ""
-        full_name = f"{first_name} {last_name}".strip()
-        user_name = f"@{message.from_user.username}" if message.from_user.username else "N/A"
-        
-        # ডাটাবেসে ইউজার সেভ বা আপডেট
-        users_col.update_one(
-            {'user_id': uid}, 
-            {'$set': {'user_id': uid, 'name': first_name, 'username': message.from_user.username}}, 
-            upsert=True
-        )
-            
-        config = get_config()
-        
-        # Deep Linking Logic (File Download or Admin Selection)
-        if len(message.text.split()) > 1:
-            cmd_data = message.text.split()[1]
-            
-            if cmd_data.startswith('sel_'):
-                if str(uid) != str(config.get('ADMIN_ID')):
-                    bot_inst.reply_to(message, "🚫 আপনি এডমিন নন।")
-                    return
-                parts = cmd_data.split('_')
-                if len(parts) >= 3:
-                    _, m_type, m_id = parts[0], parts[1], parts[2]
-                    admin_states[uid] = {'type': m_type, 'tmdb_id': m_id, 'temp_files': []}
-                    
-                    if m_type == 'movie':
-                        ask_movie_lang(message, m_id)
-                    else:
-                        msg = bot_inst.send_message(message.chat.id, "📺 সিজন নম্বর লিখুন (বা /cancel):")
-                        bot_inst.register_next_step_handler(msg, get_season)
-                    return
-
-            if cmd_data.startswith('dl_'):
-                file_to_send = cmd_data.replace('dl_', '')
-                protect = True if config.get('PROTECT_CONTENT') == 'on' else False
-                try:
-                    sent_msg = bot_inst.copy_message(message.chat.id, int(config['STORAGE_CHANNEL_ID']), int(file_to_send), protect_content=protect)
-                    delay = int(config.get('AUTO_DELETE_TIME', 0))
-                    if delay > 0:
-                        warn_msg = bot_inst.send_message(message.chat.id, f"⚠️ ফাইলটি {delay} সেকেন্ড পর ডিলিট হবে।")
-                        threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, sent_msg.message_id, delay)).start()
-                        threading.Thread(target=auto_delete_task, args=(bot_inst, message.chat.id, warn_msg.message_id, delay)).start()
-                except:
-                    bot_inst.send_message(message.chat.id, "❌ ফাইল পাওয়া যায়নি।")
-                return
-
-        # Prepare Welcome Message with Profile Details
-        welcome_text = (
-            f"🎬 *{config.get('SITE_NAME')}* এ আপনাকে স্বাগতম!\n\n"
-            f"👤 *আপনার প্রোফাইল তথ্য:*\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📝 *First Name:* {first_name}\n"
-            f"📝 *Last Name:* {last_name if last_name else 'N/A'}\n"
-            f"📛 *Full Name:* {full_name}\n"
-            f"🆔 *User ID:* `{uid}`\n"
-            f"🌐 *Username:* {user_name}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"মুভি বা টিভি শো খুঁজতে আমাদের ওয়েবসাইট ভিজিট করুন বা নিচে দেওয়া এডমিনের সাথে যোগাযোগ করুন।"
-        )
-
-        markup = types.InlineKeyboardMarkup()
-        btn_site = types.InlineKeyboardButton("🌐 Visit Website", url=config.get('SITE_URL') if config.get('SITE_URL') else "https://google.com")
-        btn_admin = types.InlineKeyboardButton("👨‍💻 Contact Admin", url=f"tg://user?id={config.get('ADMIN_ID')}")
-        markup.add(btn_site)
-        markup.add(btn_admin)
-
+def init_bot_service():
+    global bot
+    config = get_config()
+    token = config.get('BOT_TOKEN')
+    site_url = config.get('SITE_URL')
+    if token and len(token) > 20:
         try:
-            # প্রোফাইল পিকচার পাঠানো
-            photos = bot_inst.get_user_profile_photos(uid)
-            if photos.total_count > 0:
-                # সবচেয়ে বড় সাইজের ছবিটি (শেষের ইনডেক্স) নিবে
-                photo_id = photos.photos[0][-1].file_id
-                bot_inst.send_photo(message.chat.id, photo_id, caption=welcome_text, parse_mode="Markdown", reply_markup=markup)
-            else:
-                bot_inst.send_message(message.chat.id, welcome_text, parse_mode="Markdown", reply_markup=markup)
-        except:
-            bot_inst.send_message(message.chat.id, welcome_text, parse_mode="Markdown", reply_markup=markup)
-
-    @bot_inst.message_handler(commands=['cancel'])
-    def cancel_process(message):
-        uid = message.from_user.id
-        if uid in admin_states:
-            del admin_states[uid]
-            bot_inst.clear_step_handler_by_chat_id(chat_id=message.chat.id)
-            bot_inst.reply_to(message, "✅ বর্তমান আপলোড প্রসেসটি বাতিল করা হয়েছে।")
-        else:
-            bot_inst.reply_to(message, "ℹ️ কোনো প্রসেস বর্তমানে রানিং নেই।")
-
-    @bot_inst.message_handler(commands=['stats'])
-    def stats(message):
-        config = get_config()
-        if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
-        u_count = users_col.count_documents({})
-        m_count = movies_col.count_documents({})
-        bot_inst.reply_to(message, f"📊 বটের অবস্থা:\n\n👤 মোট ইউজার: {u_count}\n🎬 মোট মুভি/শো: {m_count}")
-
-    @bot_inst.message_handler(commands=['broadcast'])
-    def broadcast(message):
-        config = get_config()
-        if str(message.from_user.id) != str(config.get('ADMIN_ID')): return
-        if not message.reply_to_message:
-            bot_inst.reply_to(message, "⚠️ যে মেসেজটি পাঠাতে চান সেটি রিপ্লাই করে /broadcast লিখুন।")
-            return
-        users = users_col.find({})
-        count = 0
-        for u in users:
-            try:
-                bot_inst.copy_message(u['user_id'], message.chat.id, message.reply_to_message.message_id)
-                count += 1
-                time.sleep(0.05)
-            except: pass
-        bot_inst.send_message(message.chat.id, f"✅ {count} জন ইউজারের কাছে পাঠানো হয়েছে।")
-
-    @bot_inst.message_handler(commands=['post'])
-    def post_search(message):
-        config = get_config()
-        if str(message.from_user.id) != str(config.get('ADMIN_ID')):
-            bot_inst.reply_to(message, f"🚫 আপনি এডমিন নন।")
-            return
-        query = message.text.replace('/post', '').strip()
-        if not query:
-            bot_inst.reply_to(message, "⚠️ মুভির নাম লিখুন। (যেমন: /post Leo)")
-            return
-        
-        site_url = config.get('SITE_URL')
-        encoded_query = urllib.parse.quote(query)
-        selection_url = f"{site_url}/admin/bot_select?q={encoded_query}"
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔍 মুভি সিলেক্ট করুন (লিঙ্ক)", url=selection_url))
-        
-        bot_inst.send_message(message.chat.id, f"🔎 '{query}' এর জন্য রেজাল্ট দেখতে এবং সিলেক্ট করতে নিচের বাটনে ক্লিক করুন।", reply_markup=markup)
-
-    def ask_movie_lang(message, mid):
-        markup = types.InlineKeyboardMarkup()
-        for l in ["Bangla", "Hindi", "English", "Multi"]:
-            markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{mid}_{l}"))
-        bot.send_message(message.chat.id, "🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", reply_markup=markup)
-
-    def get_season(message):
-        if message.text == '/cancel': return cancel_process(message)
-        uid = message.from_user.id
-        if uid in admin_states:
-            admin_states[uid]['season'] = message.text
-            msg = bot_inst.send_message(message.chat.id, "🔢 এপিসোড নম্বর লিখুন:")
-            bot_inst.register_next_step_handler(msg, get_episode)
-
-    def get_episode(message):
-        if message.text == '/cancel': return cancel_process(message)
-        uid = message.from_user.id
-        if uid in admin_states:
-            admin_states[uid]['episode'] = message.text
-            msg = bot_inst.send_message(message.chat.id, "📥 কোয়ালিটি লিখুন (যেমন: 720p):")
-            bot_inst.register_next_step_handler(msg, get_tv_quality)
-
-    def get_tv_quality(message):
-        if message.text == '/cancel': return cancel_process(message)
-        uid = message.from_user.id
-        if uid in admin_states:
-            admin_states[uid]['qual'] = message.text
-            bot_inst.send_message(message.chat.id, "📥 ভিডিও ফাইলটি পাঠান (বা /cancel):")
-
-    @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('lang_m_'))
-    def movie_qual(call):
-        _, _, mid, lang = call.data.split('_')
-        markup = types.InlineKeyboardMarkup()
-        for q in ["480p", "720p", "1080p", "4K", "Custom"]:
-            markup.add(types.InlineKeyboardButton(text=q, callback_data=f"qual_m_{mid}_{lang}_{q}"))
-        bot_inst.send_message(call.message.chat.id, "💎 কোয়ালিটি সিলেক্ট করুন:", reply_markup=markup)
-
-    @bot_inst.callback_query_handler(func=lambda call: call.data.startswith('qual_m_'))
-    def movie_file_ask(call):
-        uid = call.from_user.id
-        _, _, mid, lang, qual = call.data.split('_')
-        if uid in admin_states:
-            if qual == "Custom":
-                admin_states[uid].update({'lang': lang})
-                msg = bot_inst.send_message(call.message.chat.id, "🖊️ কাস্টম কোয়ালিটি লিখুন (বা /cancel):")
-                bot_inst.register_next_step_handler(msg, get_custom_qual)
-            else:
-                admin_states[uid].update({'lang': lang, 'qual': qual})
-                bot_inst.send_message(call.message.chat.id, f"📥 মুভি ফাইলটি এখানে পাঠান (বা /cancel):")
-
-    def get_custom_qual(message):
-        if message.text == '/cancel': return cancel_process(message)
-        uid = message.from_user.id
-        if uid in admin_states:
-            admin_states[uid]['qual'] = message.text
-            bot_inst.send_message(message.chat.id, "📥 মুভি ফাইলটি এখানে পাঠান:")
-
-    @bot_inst.message_handler(content_types=['video', 'document'])
-    def save_media(message):
-        uid = message.from_user.id
-        config = get_config()
-        if uid not in admin_states: return
-        state = admin_states[uid]
-        try:
-            sent_msg = bot_inst.copy_message(int(config['STORAGE_CHANNEL_ID']), message.chat.id, message.message_id)
-            file_label = f"{state.get('lang', '')} {state.get('qual', 'HD')}".strip()
-            file_data = {'quality': file_label, 'file_id': sent_msg.message_id}
-            admin_states[uid]['temp_files'].append(file_data)
-
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("➕ Add More Quality", callback_data="add_more_qual"))
-            markup.add(types.InlineKeyboardButton("✅ Finish Upload", callback_data="finish_upload"))
-            
-            bot_inst.reply_to(message, f"📥 ফাইল গ্রহণ করা হয়েছে: {file_label}\nএখন কি করতে চান?", reply_markup=markup)
+            bot = telebot.TeleBot(token, threaded=False)
+            register_handlers(bot)
+            if site_url:
+                webhook_url = f"{site_url.rstrip('/')}/webhook"
+                bot.remove_webhook()
+                time.sleep(1)
+                bot.set_webhook(url=webhook_url)
+                print(f"✅ Webhook Active: {webhook_url}")
+            return bot
         except Exception as e:
-            bot_inst.send_message(message.chat.id, f"❌ এরর: {e}")
-
-    @bot_inst.callback_query_handler(func=lambda call: call.data == "add_more_qual")
-    def add_more_files(call):
-        uid = call.from_user.id
-        if uid in admin_states:
-            state = admin_states[uid]
-            if state['type'] == 'movie':
-                ask_movie_lang(call.message, state['tmdb_id'])
-            else:
-                msg = bot_inst.send_message(call.message.chat.id, "📥 কোয়ালিটি লিখুন (বা /cancel):")
-                bot_inst.register_next_step_handler(msg, get_tv_quality)
-
-    @bot_inst.callback_query_handler(func=lambda call: call.data == "finish_upload")
-    def finish_process_and_save(call):
-        uid = call.from_user.id
-        if uid not in admin_states: return
-        config = get_config()
-        state = admin_states[uid]
-        
-        if not state['temp_files']:
-            bot_inst.answer_callback_query(call.id, "⚠️ কোনো ফাইল পাঠানো হয়নি!")
-            return
-
-        bot_inst.send_message(call.message.chat.id, "⌛ ডাটাবেসে সেভ হচ্ছে, অপেক্ষা করুন...")
-        
-        try:
-            tmdb_api = config['TMDB_API_KEY']
-            tmdb_url = f"https://api.themoviedb.org/3/{state['type']}/{state['tmdb_id']}?api_key={tmdb_api}&append_to_response=credits,videos"
-            m = requests.get(tmdb_url).json()
-            
-            genres_data = m.get('genres', [])
-            auto_cat = "Action"
-            if state['type'] == 'tv': auto_cat = "Web Series"
-            elif genres_data:
-                for g in genres_data:
-                    if g['name'] in CATEGORIES:
-                        auto_cat = g['name']; break
-
-            title = m.get('title') or m.get('name', 'Unknown')
-            year = (m.get('release_date') or m.get('first_air_date') or 'N/A')[:4]
-            cast = ", ".join([a['name'] for a in m.get('credits', {}).get('cast', [])[:8]])
-            director = next((p['name'] for p in m.get('credits', {}).get('crew', []) if p['job'] in ['Director', 'Executive Producer']), 'N/A')
-            trailer_key = next((v['key'] for v in m.get('videos', {}).get('results', []) if v['type'] == 'Trailer'), "")
-
-            movie_info = {
-                'tmdb_id': str(state['tmdb_id']), 'type': state['type'], 'title': title, 'year': year,
-                'poster': f"https://image.tmdb.org/t/p/w500{m.get('poster_path')}",
-                'rating': str(round(m.get('vote_average', 0), 1)), 'story': m.get('overview', 'N/A'),
-                'cast': cast, 'director': director, 'category': auto_cat,
-                'trailer': f"https://www.youtube.com/embed/{trailer_key}" if trailer_key else ""
-            }
-            movies_col.update_one({'tmdb_id': movie_info['tmdb_id']}, {'$set': movie_info}, upsert=True)
-
-            if state['type'] == 'movie':
-                movies_col.update_one({'tmdb_id': state['tmdb_id']}, {'$push': {'files': {'$each': state['temp_files']}}})
-            else:
-                episodes_col.update_one(
-                    {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
-                    {'$set': {'tmdb_id': state['tmdb_id'], 'season': int(state['season']), 'episode': int(state['episode'])},
-                     '$push': {'files': {'$each': state['temp_files']}}}, upsert=True
-                )
-            
-            bot_inst.send_message(call.message.chat.id, f"✅ সফলভাবে পাবলিশ হয়েছে: {title}\n📂 ক্যাটাগরি: {auto_cat}\n💎 কোয়ালিটি সংখ্যা: {len(state['temp_files'])}")
-            del admin_states[uid]
-        except Exception as e:
-            bot_inst.send_message(call.message.chat.id, f"❌ এরর: {e}")
+            print(f"❌ Bot Initialization Failure: {e}")
+    return None
 
 # ================== MAIN APP START ==================
 
