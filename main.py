@@ -86,7 +86,7 @@ def register_handlers(bot_inst):
         full_name = f"{first_name} {last_name}".strip()
         username = f"@{message.from_user.username}" if message.from_user.username else "N/A"
         
-        # [অটো সেভ] ডাটাবেসে ইউজার সেভ/আপডেট করা
+        # [নতুন এড করা কোড: অটো সেভ] ইউজার স্টার্ট দিলেই ডাটাবেসে সেভ হবে
         users_col.update_one(
             {'user_id': uid}, 
             {'$set': {'user_id': uid, 'name': first_name, 'full_name': full_name, 'username': username}}, 
@@ -116,10 +116,10 @@ def register_handlers(bot_inst):
                     return
 
             if cmd_data.startswith('dl_'):
-                # [সিকিউরিটি চেক] ইউজার ডাটাবেসে আছে কি না দেখা
-                user_check = users_col.find_one({'user_id': uid})
-                if not user_check:
-                    bot_inst.reply_to(message, "❌ আপনি আমাদের ডাটাবেসে নিবন্ধিত নন। ফাইল পেতে প্রথমে বটটি /start করুন।")
+                # [নতুন এড করা কোড: এক্সেস কন্ট্রোল] ইউজার ডাটাবেসে না থাকলে ফাইল পাবে না
+                user_in_db = users_col.find_one({'user_id': uid})
+                if not user_in_db:
+                    bot_inst.reply_to(message, "❌ আপনি আমাদের ডাটাবেসে নিবন্ধিত নন। ফাইল পেতে প্রথমে /start লিখে বটটি সক্রিয় করুন।")
                     return
 
                 file_to_send = cmd_data.replace('dl_', '')
@@ -146,7 +146,7 @@ def register_handlers(bot_inst):
             f"🆔 *User ID:* `{uid}`\n"
             f"🌐 *Username:* {username}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"✅ আপনার আইডি ডাটাবেসে অটো সেভ করা হয়েছে। এখন আপনি ফাইল ডাউনলোড করতে পারবেন।"
+            f"✅ আপনার আইডি ডাটাবেসে সেভ করা হয়েছে। এখন আপনি মুভি ডাউনলোড করতে পারবেন।"
         )
 
         markup = types.InlineKeyboardMarkup()
@@ -225,7 +225,7 @@ def register_handlers(bot_inst):
         markup = types.InlineKeyboardMarkup()
         for l in ["Bangla", "Hindi", "English", "Multi"]:
             markup.add(types.InlineKeyboardButton(text=l, callback_data=f"lang_m_{mid}_{l}"))
-        bot.send_message(message.chat.id, "🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", reply_markup=markup)
+        bot_inst.send_message(message.chat.id, "🌐 ল্যাঙ্গুয়েজ সিলেক্ট করুন:", reply_markup=markup)
 
     def get_season(message):
         if message.text == '/cancel': return cancel_process(message)
@@ -1016,28 +1016,6 @@ BOT_SELECT_HTML = """
     {% endfor %}
     <p class="text-center small mt-4">মুভিটির ওপর ক্লিক করলে সরাসরি টেলিগ্রাম বটে ফিরে যাবেন।</p>
 </body></html>"""
-
-# ================== BOT INITIALIZATION ==================
-
-def init_bot_service():
-    global bot
-    config = get_config()
-    token = config.get('BOT_TOKEN')
-    site_url = config.get('SITE_URL')
-    if token and len(token) > 20:
-        try:
-            bot = telebot.TeleBot(token, threaded=False)
-            register_handlers(bot)
-            if site_url:
-                webhook_url = f"{site_url.rstrip('/')}/webhook"
-                bot.remove_webhook()
-                time.sleep(1)
-                bot.set_webhook(url=webhook_url)
-                print(f"✅ Webhook Active: {webhook_url}")
-            return bot
-        except Exception as e:
-            print(f"❌ Bot Initialization Failure: {e}")
-    return None
 
 # ================== MAIN APP START ==================
 
