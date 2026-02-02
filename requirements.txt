@@ -1,5 +1,6 @@
-pyTelegramBotAPI
+pyrogram
+tgcrypto
+motor
+flask
 requests
-pymongo[srv]
-Flask
 gunicorn
