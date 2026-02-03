@@ -4,21 +4,21 @@ import time
 import threading
 import os
 import sys
+import requests
 from flask import Flask
 from pyrogram import Client, filters, errors
 from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # ======================== WEB SERVER (For Render) ========================
-# Gunicorn এই 'app' ভেরিয়েবলটি খুঁজবে রান করার সময়।
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is Running! All Systems Online."
+    return "Bot is Running! Serial Forwarder is Online and Stable."
 
 def run_web_server():
-    # Render এর জন্য পোর্ট কনফিগারেশন
+    # Render-এর পোর্ট হ্যান্ডেল করার জন্য
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -28,9 +28,13 @@ API_HASH = "822fd97cf105c7bfb23050f16b5a4754"
 BOT_TOKEN = "7923450713:AAFHz7vXc6M2i6Z6yc1JldIaLzSD3DdA5-s"     
 MONGO_URL = "mongodb+srv://Demo270:Demo270@cluster0.ls1igsg.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"   
 ADMIN_ID = 8186554166             
+
+# Render-এর ড্যাশবোর্ড থেকে URL টি নিলে ভালো, নাহলে এটি অটো-ডিটেক্ট করার চেষ্টা করবে
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
+
 # ==========================================================
 
-# লগিং কনফিগারেশন
+# লগিং সেটআপ
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -44,7 +48,7 @@ db = db_client["AdvanceForwarderDB"]
 settings_col = db["settings"]
 queue_col = db["queue"]
 
-# টেলিগ্রাম ক্লায়েন্ট ইনিশিয়ালাইজেশন
+# টেলিগ্রাম বট ক্লায়েন্ট
 bot = Client(
     "forwarder_pro",
     api_id=API_ID,
@@ -53,33 +57,46 @@ bot = Client(
     parse_mode=ParseMode.HTML
 )
 
-# সময় পার্স করার ফাংশন (Y-M-D-H-M-S to Seconds)
+# --- সময় পার্স করার ফাংশন (Y-M-D-H-M-S to Seconds) ---
 def parse_duration(duration_str):
     try:
         parts = list(map(int, duration_str.split('-')))
-        if len(parts) != 6:
-            return 0
+        if len(parts) != 6: return 0
         y, mo, d, h, m, s = parts
-        total_seconds = (y * 31536000) + (mo * 2592000) + (d * 86400) + (h * 3600) + (m * 60) + s
+        total_seconds = (y * 31536000) + (mo * 2592000) + (d * 86400) + \
+                        (hours * 3600) + (minutes * 60) + seconds
         return total_seconds
-    except Exception:
-        return 0
+    except:
+        # যদি ফরম্যাট ভুল হয় তবে অন্তত সেকেন্ড পার্টটা চেক করবে
+        try: return int(duration_str.split('-')[-1])
+        except: return 0
+
+# --- সেলফ-পিঙ্গার (বটকে স্লিপ হওয়া থেকে বাঁচাতে) ---
+async def self_pinger():
+    while True:
+        await asyncio.sleep(300) # প্রতি ৫ মিনিট
+        if RENDER_URL:
+            try:
+                requests.get(RENDER_URL, timeout=10)
+                logger.info("Self-Ping Successful.")
+            except Exception as e:
+                logger.error(f"Self-Ping Error: {e}")
 
 # --- কমান্ড হ্যান্ডলারস ---
 
 @bot.on_message(filters.command("start") & filters.private)
-async def start_command(client, message):
+async def start_handler(client, message):
     text = (
         "💎 **প্রো সিরিয়াল টাইমড ফরওয়ার্ডার বট**\n\n"
         "🛠 **সেটআপ কমান্ড:**\n"
         "`/set source_id target_id y-m-d-h-m-s limit`\n"
         "**উদাহরণ:** `/set -100111 -100222 0-0-0-0-0-30 5000` \n"
-        "*(৩০ সেকেন্ড দেরি করে ৫০০০ ফাইল সিরিয়াল অনুযায়ী যাবে)*\n\n"
+        "*(৩০ সেকেন্ড ডিলে করে সিরিয়াল অনুযায়ী ৫০০০ ফাইল যাবে)*\n\n"
         "📜 **অন্যান্য কমান্ড:**\n"
         "• `/del source_id` - সোর্স চ্যানেল মুছতে\n"
-        "• `/list` - লিস্ট দেখতে\n"
-        "• `/status` - কিউ দেখতে\n"
-        "• `/clear_queue` - কিউ মুছতে"
+        "• `/list` - সব সেটিংস দেখতে\n"
+        "• `/status` - কিউ স্ট্যাটাস দেখতে\n"
+        "• `/clear_queue` - সব কিউ মুছতে"
     )
     await message.reply_text(text)
 
@@ -88,7 +105,7 @@ async def set_mapping(client, message):
     try:
         args = message.text.split()
         if len(args) != 5:
-            return await message.reply_text("❌ ফরম্যাট: `/set source target y-m-d-h-m-s limit`")
+            return await message.reply_text("❌ ফরম্যাট: `/set source_id target_id 0-0-0-0-0-30 5000`")
         
         source, target, duration_str, limit = args[1], args[2], args[3], int(args[4])
         delay = parse_duration(duration_str)
@@ -104,7 +121,7 @@ async def set_mapping(client, message):
             }},
             upsert=True
         )
-        await message.reply_text(f"✅ **সেটআপ সফল!**\n\n📤 সোর্স: `{source}`\n📥 টার্গেট: `{target}`\n⏳ দেরি: `{duration_str}`\n🔢 লিমিট: `{limit}`")
+        await message.reply_text(f"✅ **সেটআপ সফল!**\n\n📤 সোর্স: `{source}`\n📥 টার্গেট: `{target}`\n⏳ ডিলে: `{duration_str}`\n🔢 লিমিট: `{limit}`")
     except Exception as e:
         await message.reply_text(f"❌ এরর: {e}")
 
@@ -117,7 +134,7 @@ async def delete_mapping(client, message):
     if res.deleted_count:
         await message.reply_text(f"🗑️ সোর্স `{args[1]}` ডিলিট করা হয়েছে।")
     else:
-        await message.reply_text("❌ এই আইডিটি লিস্টে নেই।")
+        await message.reply_text("❌ আইডিটি ডাটাবেসে নেই।")
 
 @bot.on_message(filters.command("list") & filters.user(ADMIN_ID))
 async def list_mappings(client, message):
@@ -127,7 +144,7 @@ async def list_mappings(client, message):
         return await message.reply_text("📭 লিস্ট খালি।")
     msg = "📋 **আপনার সেটিংস লিস্ট:**\n\n"
     for c in configs:
-        msg += f"• `{c['source']}` ➔ `{c['target']}`\n  দেরি: {c['duration_text']} | লিমিট: {c['count']}/{c['limit']}\n\n"
+        msg += f"• `{c['source']}` ➔ `{c['target']}`\n  ডিলে: {c['duration_text']} | লিমিট: {c['count']}/{c['limit']}\n\n"
     await message.reply_text(msg)
 
 @bot.on_message(filters.command("status") & filters.user(ADMIN_ID))
@@ -136,14 +153,14 @@ async def status_check(client, message):
     await message.reply_text(f"⏳ **কিউ স্ট্যাটাস:**\n\n✅ পেন্ডিং মেসেজ: {p_count} টি")
 
 @bot.on_message(filters.command("clear_queue") & filters.user(ADMIN_ID))
-async def clear_queue(client, message):
+async def clear_queue_cmd(client, message):
     await queue_col.delete_many({})
     await message.reply_text("🧹 কিউ থেকে সব পেন্ডিং মেসেজ মুছে ফেলা হয়েছে।")
 
 # --- ফাইল সেভ লজিক ---
 
 @bot.on_message(filters.chat() & ~filters.user(ADMIN_ID))
-async def incoming_message_listener(client, message):
+async def message_listener(client, message):
     source_id = str(message.chat.id)
     config = await settings_col.find_one({"source": source_id})
     
@@ -160,15 +177,14 @@ async def incoming_message_listener(client, message):
             "send_at": scheduled_time,
             "status": "pending"
         })
-        logger.info(f"Message {message.id} added to queue for {source_id}")
 
-# --- ফরওয়ার্ডিং ওয়ার্কার (ব্যাকগ্রাউন্ড) ---
+# --- ফরওয়ার্ডিং ওয়ার্কার (সিরিয়াল মেইনটেইন করে) ---
 
 async def forward_worker():
     while True:
         try:
             current_time = time.time()
-            # সিরিয়াল বজায় রাখতে message_id দিয়ে সর্ট (১, ২, ৩...)
+            # সিরিয়াল বজায় রাখতে message_id দিয়ে সর্টিং
             cursor = queue_col.find({
                 "send_at": {"$lte": current_time},
                 "status": "pending"
@@ -176,28 +192,25 @@ async def forward_worker():
 
             async for task in cursor:
                 try:
-                    # ফাইল হুবহু কপি করা
                     await bot.copy_message(
                         chat_id=int(task['target_id']),
                         from_chat_id=int(task['source_id']),
                         message_id=task['message_id']
                     )
                     
-                    # ডাটাবেস আপডেট
                     await queue_col.delete_one({"_id": task["_id"]})
                     await settings_col.update_one(
                         {"source": task['source_id']}, 
                         {"$inc": {"count": 1}}
                     )
                     
-                    logger.info(f"Forwarded Message {task['message_id']} to {task['target_id']}")
+                    logger.info(f"Forwarded: {task['message_id']}")
                     await asyncio.sleep(2.0) # স্প্যাম প্রোটেকশন
                     
                 except errors.FloodWait as e:
-                    logger.warning(f"FloodWait: Sleeping for {e.value}s")
                     await asyncio.sleep(e.value)
                 except Exception as e:
-                    logger.error(f"Error for Message {task['message_id']}: {e}")
+                    logger.error(f"Forward Error: {e}")
                     await queue_col.update_one({"_id": task["_id"]}, {"$set": {"status": "failed"}})
 
         except Exception as e:
@@ -205,24 +218,36 @@ async def forward_worker():
         
         await asyncio.sleep(5)
 
-# --- মূল রান ফাংশন ---
+# --- স্টার্ট অল (অটো রিস্টার্ট লজিক সহ) ---
 
 async def start_all():
-    logger.info("Starting Telegram Bot...")
-    await bot.start()
-    logger.info("Bot is Online!")
-    # ব্যাকগ্রাউন্ড ওয়ার্কার শুরু
-    asyncio.create_task(forward_worker())
-    # বটকে সচল রাখা
-    await asyncio.Event().wait()
+    while True:
+        try:
+            if not bot.is_connected:
+                await bot.start()
+            
+            logger.info("Bot is Online!")
+            
+            # ব্যাকগ্রাউন্ড ওয়ার্কার ও পিঙ্গার চালু করা
+            asyncio.create_task(forward_worker())
+            asyncio.create_task(self_pinger())
+            
+            # বট চালু রাখা
+            while bot.is_connected:
+                await asyncio.sleep(60)
+                
+        except Exception as e:
+            logger.error(f"Restarting bot due to error: {e}")
+            await asyncio.sleep(10)
+            continue
 
 if __name__ == "__main__":
-    # ১. ওয়েব সার্ভার (Flask) আলাদা থ্রেডে চালানো যাতে Render ক্র্যাশ না করে
+    # ১. ওয়েব সার্ভার আলাদা থ্রেডে চালানো
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # ২. বটের ইভেন্ট লুপ চালানো
+    # ২. ইভেন্ট লুপ রান করা
+    loop = asyncio.get_event_loop()
     try:
-        loop = asyncio.get_event_loop()
         loop.run_until_complete(start_all())
     except KeyboardInterrupt:
-        logger.info("Bot Stopped.")
+        logger.info("Bot Stopped Manually.")
