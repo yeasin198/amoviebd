@@ -9,13 +9,14 @@ from flask import Flask
 from pyrogram import Client, filters, errors
 from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
+from datetime import datetime, timedelta
 
 # ======================== WEB SERVER ========================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is Running! Batch Serial Forwarder is Online."
+    return "Bot is Running! Pro Batch Forwarder is Online."
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -50,6 +51,7 @@ bot = Client(
     parse_mode=ParseMode.HTML
 )
 
+# --- ইউটিলিটি ফাংশন ---
 def parse_duration(duration_str):
     try:
         parts = list(map(int, duration_str.split('-')))
@@ -66,20 +68,24 @@ async def self_pinger():
     while True:
         await asyncio.sleep(300)
         if RENDER_URL:
-            try:
-                requests.get(RENDER_URL, timeout=10)
+            try: requests.get(RENDER_URL, timeout=10)
             except: pass
 
-# ======================== কমান্ডস ========================
+# ======================== কমান্ড হ্যান্ডলারস ========================
 
 @bot.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     text = (
-        "🚀 **ব্যাচ সিরিয়াল ফরওয়ার্ডার বট**\n\n"
-        "🛠 **সেটআপ:** `/set source_id target_id y-m-d-h-m-s batch_limit`\n"
-        "**উদাহরণ:** `/set -100111 -100222 0-0-0-0-0-30 5` \n"
-        "(প্রতি ৩০ সেকেন্ডে ৫টি করে মেসেজ যাবে)\n\n"
-        "📜 `/list`, `/status`, `/del source_id`, `/clear_queue`"
+        "💎 **প্রো সিরিয়াল ব্যাচ ফরওয়ার্ডার**\n\n"
+        "🛠 **সেটআপ কমান্ড:**\n"
+        "`/set source_id target_id y-m-d-h-m-s total_limit batch` \n\n"
+        "**উদাহরণ:** `/set -100111 -100222 0-0-0-0-0-30 5000 5` \n"
+        "(এর মানে: প্রতি ৩০ সেকেন্ডে ৫টি করে মেসেজ যাবে, মোট ৫০০০টি পর্যন্ত)\n\n"
+        "📜 **অন্যান্য কমান্ড:**\n"
+        "• `/list` - সব সেটিংস ও প্রগ্রেস দেখতে\n"
+        "• `/status` - কিউতে কত মেসেজ বাকি দেখতে\n"
+        "• `/del source_id` - সোর্স মুছতে\n"
+        "• `/clear_queue` - সব মেসেজ কিউ থেকে মুছতে"
     )
     await message.reply_text(text)
 
@@ -87,10 +93,10 @@ async def start_handler(client, message):
 async def set_mapping(client, message):
     try:
         args = message.text.split()
-        if len(args) != 5:
-            return await message.reply_text("❌ ফরম্যাট: `/set source_id target_id 0-0-0-0-0-30 5` (এখানে ৫ হলো ব্যাচ লিমিট)")
+        if len(args) != 6:
+            return await message.reply_text("❌ ফরম্যাট ভুল! \nইউজ: `/set source_id target_id 0-0-0-0-0-30 5000 5` \n(সোর্স, টার্গেট, ডিলে, টোটাল লিমিট, ব্যাচ লিমিট)")
         
-        source, target, duration_str, limit = args[1], args[2], args[3], int(args[4])
+        source, target, duration_str, total_limit, batch_limit = args[1], args[2], args[3], int(args[4]), int(args[5])
         delay = parse_duration(duration_str)
 
         await settings_col.update_one(
@@ -98,13 +104,15 @@ async def set_mapping(client, message):
             {"$set": {
                 "target": str(target),
                 "delay": delay,
-                "batch_limit": limit,
-                "last_sent": 0, # শেষ ফরওয়ার্ড করার সময়
+                "total_limit": total_limit,
+                "batch_limit": batch_limit,
+                "forwarded_count": 0,
+                "last_sent": 0,
                 "duration_text": duration_str
             }},
             upsert=True
         )
-        await message.reply_text(f"✅ **সেটআপ সফল!**\n\n📤 সোর্স: `{source}`\n📥 টার্গেট: `{target}`\n⏳ বিরতি: `{duration_str}`\n🔢 ব্যাচ লিমিট: `{limit}`")
+        await message.reply_text(f"✅ **সেটআপ সফল!**\n\n📤 সোর্স: `{source}`\n📥 টার্গেট: `{target}`\n⏳ বিরতি: `{duration_str}`\n🔢 টোটাল লিমিট: `{total_limit}`\n📦 ব্যাচ প্রতি: `{batch_limit}` টি")
     except Exception as e:
         await message.reply_text(f"❌ এরর: {e}")
 
@@ -112,18 +120,34 @@ async def set_mapping(client, message):
 async def list_mappings(client, message):
     cursor = settings_col.find({})
     configs = await cursor.to_list(length=100)
-    if not configs: return await message.reply_text("📭 লিস্ট খালি।")
-    msg = "📋 **আপনার সেটিংস:**\n\n"
+    if not configs: return await message.reply_text("📭 কোন সেটিংস নেই।")
+    
+    msg = "📋 **আপনার সেটিংস ও প্রগ্রেস:**\n\n"
     for c in configs:
-        msg += f"• `{c['source']}` ➔ `{c['target']}`\n  বিরতি: {c['duration_text']} | ব্যাচ: {c['batch_limit']}টি\n\n"
+        msg += (f"🔹 **Source:** `{c['source']}`\n"
+                f"➔ **Target:** `{c['target']}`\n"
+                f"⏱ **Delay:** {c['duration_text']} | **Batch:** {c['batch_limit']}\n"
+                f"📊 **Progress:** {c['forwarded_count']}/{c['total_limit']}\n\n")
     await message.reply_text(msg)
+
+@bot.on_message(filters.command("status") & filters.user(ADMIN_ID))
+async def status_check(client, message):
+    p_count = await queue_col.count_documents({"status": "pending"})
+    await message.reply_text(f"⏳ **বর্তমান কিউ স্ট্যাটাস:**\n\n✅ ডাটাবেসে মোট `{p_count}` টি মেসেজ ফরওয়ার্ড হওয়ার অপেক্ষায় আছে।")
+
+@bot.on_message(filters.command("del") & filters.user(ADMIN_ID))
+async def delete_mapping(client, message):
+    args = message.text.split()
+    if len(args) < 2: return await message.reply_text("❌ সোর্স আইডি দিন।")
+    await settings_col.delete_one({"source": str(args[1])})
+    await message.reply_text(f"🗑️ সোর্স `{args[1]}` ডিলিট করা হয়েছে।")
 
 @bot.on_message(filters.command("clear_queue") & filters.user(ADMIN_ID))
 async def clear_queue_cmd(client, message):
     await queue_col.delete_many({})
-    await message.reply_text("🧹 কিউ থেকে সব পেন্ডিং মেসেজ ডিলিট করা হয়েছে।")
+    await message.reply_text("🧹 কিউ ক্লিয়ার করা হয়েছে।")
 
-# ======================== লিসেনার: মেসেজ সেভ করা ========================
+# ======================== লিসেনার (মেসেজ সংগ্রহ) ========================
 
 @bot.on_message(filters.all & (filters.channel | filters.group))
 async def message_listener(client, message):
@@ -132,68 +156,83 @@ async def message_listener(client, message):
         config = await settings_col.find_one({"source": source_id})
         
         if config:
-            # শুধু ডাটাবেসে সেভ করা হচ্ছে, টাইমিং ওয়ার্কার হ্যান্ডেল করবে
-            await queue_col.insert_one({
-                "source_id": source_id,
-                "target_id": config['target'],
-                "message_id": message.id,
-                "status": "pending",
-                "timestamp": time.time() # ইনসার্ট টাইম
-            })
-            # logger.info(f"📥 Message {message.id} added to queue from {source_id}")
+            # যদি টোটাল লিমিট শেষ হয়ে না থাকে
+            if config['forwarded_count'] < config['total_limit']:
+                await queue_col.insert_one({
+                    "source_id": source_id,
+                    "target_id": config['target'],
+                    "message_id": message.id,
+                    "status": "pending",
+                    "timestamp": time.time()
+                })
     except Exception as e:
         logger.error(f"Listener Error: {e}")
 
-# ======================== ওয়ার্কার: ব্যাচ ফরওয়ার্ডিং লজিক ========================
+# ======================== ওয়ার্কার (সিরিয়াল ব্যাচ ফরওয়ার্ডিং) ========================
 
-async def batch_forward_worker():
+async def pro_forward_worker():
     while not bot.is_connected:
         await asyncio.sleep(1)
 
-    logger.info("🚀 Batch Forward Worker Started!")
+    logger.info("🚀 Pro Batch Forward Worker Started!")
     
     while True:
         try:
             current_time = time.time()
-            # সব সোর্স কনফিগারেশন চেক করা
             cursor = settings_col.find({})
+            
             async for config in cursor:
+                source_id = config['source']
+                target_id = config['target']
                 last_sent = config.get("last_sent", 0)
                 delay = config.get("delay", 0)
-                
-                # যদি ডিলে সময় পার হয়ে যায়
+                total_limit = config.get("total_limit", 0)
+                forwarded_count = config.get("forwarded_count", 0)
+                batch_limit = config.get("batch_limit", 1)
+
+                # ১. লিমিট চেক
+                if forwarded_count >= total_limit:
+                    continue
+
+                # ২. সময় (Delay) চেক
                 if current_time >= (last_sent + delay):
-                    source_id = config['source']
-                    batch_limit = config.get('batch_limit', 1)
-                    
-                    # কিউ থেকে ওই সোর্সের মেসেজ তোলা (সিরিয়াল অনুযায়ী: message_id 1)
-                    pending_messages = await queue_col.find({
+                    # কিউ থেকে মেসেজ বের করা (সিরিয়াল বজায় রাখতে message_id অনুযায়ী সর্ট)
+                    pending_tasks = await queue_col.find({
                         "source_id": source_id,
                         "status": "pending"
                     }).sort("message_id", 1).limit(batch_limit).to_list(length=batch_limit)
 
-                    if not pending_messages:
+                    if not pending_tasks:
                         continue
 
-                    logger.info(f"📦 Processing batch for {source_id}: {len(pending_messages)} messages")
-
-                    for task in pending_messages:
+                    for task in pending_tasks:
                         try:
+                            # লিমিট আবার চেক করছি লুপের ভেতর (নিরাপত্তার জন্য)
+                            current_config = await settings_col.find_one({"source": source_id})
+                            if current_config['forwarded_count'] >= total_limit:
+                                break
+
                             await bot.copy_message(
-                                chat_id=int(task['target_id']),
-                                from_chat_id=int(task['source_id']),
+                                chat_id=int(target_id),
+                                from_chat_id=int(source_id),
                                 message_id=int(task['message_id'])
                             )
-                            # ফরওয়ার্ড সফল হলে কিউ থেকে ডিলিট
+                            
+                            # প্রগ্রেস আপডেট
                             await queue_col.delete_one({"_id": task["_id"]})
-                            await asyncio.sleep(1.5) # প্রতি মেসেজের মাঝে ছোট গ্যাপ (টেলিগ্রাম লিমিট এড়াতে)
+                            await settings_col.update_one(
+                                {"source": source_id},
+                                {"$inc": {"forwarded_count": 1}}
+                            )
+                            await asyncio.sleep(2) # Flood avoidance
+
                         except errors.FloodWait as e:
                             await asyncio.sleep(e.value)
                         except Exception as e:
-                            logger.error(f"Forwarding Error: {e}")
+                            logger.error(f"Task Error: {e}")
                             await queue_col.delete_one({"_id": task["_id"]})
 
-                    # ব্যাচ পাঠানো শেষ হলে 'last_sent' আপডেট করা
+                    # ব্যাচ শেষ হলে সময় আপডেট
                     await settings_col.update_one(
                         {"source": source_id},
                         {"$set": {"last_sent": time.time()}}
@@ -202,9 +241,9 @@ async def batch_forward_worker():
         except Exception as e:
             logger.error(f"Worker Loop Error: {e}")
         
-        await asyncio.sleep(5) # প্রতি ৫ সেকেন্ড পর পর চেক করবে পরবর্তী ব্যাচের সময় হয়েছে কি না
+        await asyncio.sleep(5)
 
-# ======================== রানার ========================
+# ======================== মেইন রানার ========================
 
 async def start_all():
     while True:
@@ -213,7 +252,7 @@ async def start_all():
                 await bot.start()
             
             if not hasattr(start_all, "tasks_started"):
-                asyncio.create_task(batch_forward_worker())
+                asyncio.create_task(pro_forward_worker())
                 asyncio.create_task(self_pinger())
                 start_all.tasks_started = True
             
