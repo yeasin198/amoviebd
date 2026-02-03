@@ -10,7 +10,7 @@ from pyrogram import Client, filters, errors
 from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# ======================== WEB SERVER (For Render) ========================
+# ======================== WEB SERVER ========================
 app = Flask(__name__)
 
 @app.route('/')
@@ -18,7 +18,6 @@ def home():
     return "Bot is Running! Serial Forwarder is Online and Stable."
 
 def run_web_server():
-    # Render-এর পোর্ট হ্যান্ডেল করার জন্য
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -29,10 +28,7 @@ BOT_TOKEN = "7923450713:AAFHz7vXc6M2i6Z6yc1JldIaLzSD3DdA5-s"
 MONGO_URL = "mongodb+srv://Demo270:Demo270@cluster0.ls1igsg.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"   
 ADMIN_ID = 8186554166             
 
-# Render-এর ড্যাশবোর্ড থেকে URL টি নিলে ভালো, নাহলে এটি অটো-ডিটেক্ট করার চেষ্টা করবে
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
-
-# ==========================================================
 
 # লগিং সেটআপ
 logging.basicConfig(
@@ -57,24 +53,24 @@ bot = Client(
     parse_mode=ParseMode.HTML
 )
 
-# --- সময় পার্স করার ফাংশন (Y-M-D-H-M-S to Seconds) ---
+# --- সময় পার্স করার ফাংশন (ফিক্স করা হয়েছে) ---
 def parse_duration(duration_str):
     try:
         parts = list(map(int, duration_str.split('-')))
         if len(parts) != 6: return 0
         y, mo, d, h, m, s = parts
+        # এখানে variable এর নামগুলো ঠিক করা হয়েছে
         total_seconds = (y * 31536000) + (mo * 2592000) + (d * 86400) + \
-                        (hours * 3600) + (minutes * 60) + seconds
+                        (h * 3600) + (m * 60) + s
         return total_seconds
     except:
-        # যদি ফরম্যাট ভুল হয় তবে অন্তত সেকেন্ড পার্টটা চেক করবে
         try: return int(duration_str.split('-')[-1])
         except: return 0
 
-# --- সেলফ-পিঙ্গার (বটকে স্লিপ হওয়া থেকে বাঁচাতে) ---
+# --- সেলফ-পিঙ্গার ---
 async def self_pinger():
     while True:
-        await asyncio.sleep(300) # প্রতি ৫ মিনিট
+        await asyncio.sleep(300) 
         if RENDER_URL:
             try:
                 requests.get(RENDER_URL, timeout=10)
@@ -178,13 +174,12 @@ async def message_listener(client, message):
             "status": "pending"
         })
 
-# --- ফরওয়ার্ডিং ওয়ার্কার (সিরিয়াল মেইনটেইন করে) ---
+# --- ফরওয়ার্ডিং ওয়ার্কার ---
 
 async def forward_worker():
     while True:
         try:
             current_time = time.time()
-            # সিরিয়াল বজায় রাখতে message_id দিয়ে সর্টিং
             cursor = queue_col.find({
                 "send_at": {"$lte": current_time},
                 "status": "pending"
@@ -205,7 +200,7 @@ async def forward_worker():
                     )
                     
                     logger.info(f"Forwarded: {task['message_id']}")
-                    await asyncio.sleep(2.0) # স্প্যাম প্রোটেকশন
+                    await asyncio.sleep(2.0)
                     
                 except errors.FloodWait as e:
                     await asyncio.sleep(e.value)
@@ -218,7 +213,7 @@ async def forward_worker():
         
         await asyncio.sleep(5)
 
-# --- স্টার্ট অল (অটো রিস্টার্ট লজিক সহ) ---
+# --- স্টার্ট অল (আপনার রিস্টার্ট লজিক সহ) ---
 
 async def start_all():
     while True:
