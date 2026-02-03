@@ -10,14 +10,15 @@ from pyrogram import Client, filters, errors
 from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# ======================== WEB SERVER ========================
+# ======================== WEB SERVER (Render এর জন্য) ========================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is Running! Serial Forwarder is Online and Stable."
+    return "Bot is Running! Serial Forwarder Pro is Online and Stable."
 
 def run_web_server():
+    # Render অটোমেটিক PORT এনভায়রনমেন্ট ভেরিয়েবল দেয়
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -28,6 +29,7 @@ BOT_TOKEN = "7923450713:AAFHz7vXc6M2i6Z6yc1JldIaLzSD3DdA5-s"
 MONGO_URL = "mongodb+srv://Demo270:Demo270@cluster0.ls1igsg.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"   
 ADMIN_ID = 8186554166             
 
+# Render এর External URL (স্লিপ মোড থেকে বাঁচাতে)
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 
 # লগিং সেটআপ
@@ -67,10 +69,10 @@ def parse_duration(duration_str):
         try: return int(duration_str.split('-')[-1])
         except: return 0
 
-# --- সেলফ-পিঙ্গার ---
+# --- সেলফ-পিঙ্গার (বটকে জ্যান্ত রাখতে) ---
 async def self_pinger():
     while True:
-        await asyncio.sleep(300) 
+        await asyncio.sleep(300) # প্রতি ৫ মিনিট পরপর
         if RENDER_URL:
             try:
                 requests.get(RENDER_URL, timeout=10)
@@ -107,9 +109,9 @@ async def set_mapping(client, message):
         delay = parse_duration(duration_str)
 
         await settings_col.update_one(
-            {"source": source},
+            {"source": str(source)},
             {"$set": {
-                "target": target,
+                "target": str(target),
                 "delay": delay,
                 "limit": limit,
                 "count": 0,
@@ -126,7 +128,7 @@ async def delete_mapping(client, message):
     args = message.text.split()
     if len(args) < 2:
         return await message.reply_text("❌ সোর্স আইডি দিন।")
-    res = await settings_col.delete_one({"source": args[1]})
+    res = await settings_col.delete_one({"source": str(args[1])})
     if res.deleted_count:
         await message.reply_text(f"🗑️ সোর্স `{args[1]}` ডিলিট করা হয়েছে।")
     else:
@@ -153,9 +155,9 @@ async def clear_queue_cmd(client, message):
     await queue_col.delete_many({})
     await message.reply_text("🧹 কিউ থেকে সব পেন্ডিং মেসেজ মুছে ফেলা হয়েছে।")
 
-# --- ফাইল সেভ লজিক ---
+# --- ফাইল সেভ লজিক (আপনার নিজের পোস্টগুলোও সেভ হবে এখন) ---
 
-@bot.on_message(filters.chat() & ~filters.user(ADMIN_ID))
+@bot.on_message(filters.chat()) 
 async def message_listener(client, message):
     source_id = str(message.chat.id)
     config = await settings_col.find_one({"source": source_id})
@@ -173,13 +175,15 @@ async def message_listener(client, message):
             "send_at": scheduled_time,
             "status": "pending"
         })
+        logger.info(f"Message {message.id} added to queue from {source_id}")
 
-# --- ফরওয়ার্ডিং ওয়ার্কার ---
+# --- ফরওয়ার্ডিং ওয়ার্কার (সিরিয়াল অনুযায়ী পাঠাবে) ---
 
 async def forward_worker():
     while True:
         try:
             current_time = time.time()
+            # message_id দিয়ে সর্ট করা হয়েছে যাতে সিরিয়াল ঠিক থাকে
             cursor = queue_col.find({
                 "send_at": {"$lte": current_time},
                 "status": "pending"
@@ -200,49 +204,39 @@ async def forward_worker():
                     )
                     
                     logger.info(f"Forwarded: {task['message_id']}")
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(2.0) # টেলিগ্রামের রেট লিমিট এড়াতে
                     
                 except errors.FloodWait as e:
                     await asyncio.sleep(e.value)
                 except Exception as e:
                     logger.error(f"Forward Error: {e}")
-                    await queue_col.update_one({"_id": task["_id"]}, {"$set": {"status": "failed"}})
+                    # যদি মেসেজ ডিলিট হয়ে যায় তবে কিউ থেকে সরিয়ে দাও
+                    await queue_col.delete_one({"_id": task["_id"]})
 
         except Exception as e:
             logger.error(f"Worker Loop Error: {e}")
         
         await asyncio.sleep(5)
 
-# --- স্টার্ট অল (আপনার রিস্টার্ট লজিক সহ) ---
+# --- স্টার্ট অল (অটো রিস্টার্ট লজিকসহ) ---
 
 async def start_all():
-    while True:
-        try:
-            if not bot.is_connected:
-                await bot.start()
-            
-            logger.info("Bot is Online!")
-            
-            # ব্যাকগ্রাউন্ড ওয়ার্কার ও পিঙ্গার চালু করা
-            asyncio.create_task(forward_worker())
-            asyncio.create_task(self_pinger())
-            
-            # বট চালু রাখা
-            while bot.is_connected:
-                await asyncio.sleep(60)
-                
-        except Exception as e:
-            logger.error(f"Restarting bot due to error: {e}")
-            await asyncio.sleep(10)
-            continue
+    await bot.start()
+    logger.info("Bot is Online and Ready!")
+    
+    # ব্যাকগ্রাউন্ড কাজগুলো চালু করা
+    asyncio.create_task(forward_worker())
+    asyncio.create_task(self_pinger())
+    
+    # বটকে চিরকাল চালু রাখা
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     # ১. ওয়েব সার্ভার আলাদা থ্রেডে চালানো
     threading.Thread(target=run_web_server, daemon=True).start()
     
     # ২. ইভেন্ট লুপ রান করা
-    loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(start_all())
+        asyncio.run(start_all())
     except KeyboardInterrupt:
         logger.info("Bot Stopped Manually.")
