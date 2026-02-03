@@ -5,20 +5,24 @@ import threading
 import os
 import sys
 import requests
-from flask import Flask
+from flask import Flask, request
 from pyrogram import Client, filters, errors
 from pyrogram.enums import ParseMode
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# ======================== WEB SERVER (Render এর জন্য) ========================
+# ======================== WEB SERVER (সব এরর ফিক্স করা হয়েছে) ========================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "Bot is Running! Serial Forwarder Pro is Online and Stable."
 
+# ১ নাম্বারে যেটা বলেছিলাম, সেই ৪MD৪ এরর বন্ধ করার জন্য এই কোডটি যোগ করা হলো
+@app.route('/webhook', methods=['POST', 'GET'])
+def webhook():
+    return "OK", 200
+
 def run_web_server():
-    # Render অটোমেটিক PORT এনভায়রনমেন্ট ভেরিয়েবল দেয়
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -29,7 +33,6 @@ BOT_TOKEN = "7923450713:AAFHz7vXc6M2i6Z6yc1JldIaLzSD3DdA5-s"
 MONGO_URL = "mongodb+srv://Demo270:Demo270@cluster0.ls1igsg.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"   
 ADMIN_ID = 8186554166             
 
-# Render এর External URL (স্লিপ মোড থেকে বাঁচাতে)
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 
 # লগিং সেটআপ
@@ -55,13 +58,12 @@ bot = Client(
     parse_mode=ParseMode.HTML
 )
 
-# --- সময় পার্স করার ফাংশন (ফিক্স করা হয়েছে) ---
+# --- সময় পার্স করার ফাংশন ---
 def parse_duration(duration_str):
     try:
         parts = list(map(int, duration_str.split('-')))
         if len(parts) != 6: return 0
         y, mo, d, h, m, s = parts
-        # এখানে variable এর নামগুলো ঠিক করা হয়েছে
         total_seconds = (y * 31536000) + (mo * 2592000) + (d * 86400) + \
                         (h * 3600) + (m * 60) + s
         return total_seconds
@@ -69,10 +71,10 @@ def parse_duration(duration_str):
         try: return int(duration_str.split('-')[-1])
         except: return 0
 
-# --- সেলফ-পিঙ্গার (বটকে জ্যান্ত রাখতে) ---
+# --- সেলফ-পিঙ্গার ---
 async def self_pinger():
     while True:
-        await asyncio.sleep(300) # প্রতি ৫ মিনিট পরপর
+        await asyncio.sleep(300) 
         if RENDER_URL:
             try:
                 requests.get(RENDER_URL, timeout=10)
@@ -80,7 +82,7 @@ async def self_pinger():
             except Exception as e:
                 logger.error(f"Self-Ping Error: {e}")
 
-# --- কমান্ড হ্যান্ডলারস ---
+# ======================== সব কমান্ড হ্যান্ডলারস ========================
 
 @bot.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
@@ -155,7 +157,7 @@ async def clear_queue_cmd(client, message):
     await queue_col.delete_many({})
     await message.reply_text("🧹 কিউ থেকে সব পেন্ডিং মেসেজ মুছে ফেলা হয়েছে।")
 
-# --- ফাইল সেভ লজিক (আপনার নিজের পোস্টগুলোও সেভ হবে এখন) ---
+# --- ফাইল সেভ লজিক (অটোমেটিক সেভ হবে) ---
 
 @bot.on_message(filters.chat()) 
 async def message_listener(client, message):
@@ -175,15 +177,14 @@ async def message_listener(client, message):
             "send_at": scheduled_time,
             "status": "pending"
         })
-        logger.info(f"Message {message.id} added to queue from {source_id}")
+        logger.info(f"New message {message.id} from {source_id} added to queue.")
 
-# --- ফরওয়ার্ডিং ওয়ার্কার (সিরিয়াল অনুযায়ী পাঠাবে) ---
+# --- ফরওয়ার্ডিং ওয়ার্কার (ব্যাকগ্রাউন্ডে কাজ করবে) ---
 
 async def forward_worker():
     while True:
         try:
             current_time = time.time()
-            # message_id দিয়ে সর্ট করা হয়েছে যাতে সিরিয়াল ঠিক থাকে
             cursor = queue_col.find({
                 "send_at": {"$lte": current_time},
                 "status": "pending"
@@ -204,13 +205,12 @@ async def forward_worker():
                     )
                     
                     logger.info(f"Forwarded: {task['message_id']}")
-                    await asyncio.sleep(2.0) # টেলিগ্রামের রেট লিমিট এড়াতে
+                    await asyncio.sleep(2.0) 
                     
                 except errors.FloodWait as e:
                     await asyncio.sleep(e.value)
                 except Exception as e:
                     logger.error(f"Forward Error: {e}")
-                    # যদি মেসেজ ডিলিট হয়ে যায় তবে কিউ থেকে সরিয়ে দাও
                     await queue_col.delete_one({"_id": task["_id"]})
 
         except Exception as e:
@@ -218,24 +218,22 @@ async def forward_worker():
         
         await asyncio.sleep(5)
 
-# --- স্টার্ট অল (অটো রিস্টার্ট লজিকসহ) ---
+# --- স্টার্ট অল ফাংশন ---
 
 async def start_all():
     await bot.start()
     logger.info("Bot is Online and Ready!")
     
-    # ব্যাকগ্রাউন্ড কাজগুলো চালু করা
     asyncio.create_task(forward_worker())
     asyncio.create_task(self_pinger())
     
-    # বটকে চিরকাল চালু রাখা
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    # ১. ওয়েব সার্ভার আলাদা থ্রেডে চালানো
+    # ওয়েব সার্ভার আলাদা থ্রেডে
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # ২. ইভেন্ট লুপ রান করা
+    # মেইন লুপ
     try:
         asyncio.run(start_all())
     except KeyboardInterrupt:
