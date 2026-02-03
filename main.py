@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is Running! All Issues Fixed. Serial Forwarder is Online."
+    return "Bot is Running! Serial Forwarder is Online and Stable."
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -69,7 +69,7 @@ def parse_duration(duration_str):
 # --- সেলফ-পিঙ্গার ---
 async def self_pinger():
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(300) # প্রতি ৫ মিনিট
         if RENDER_URL:
             try:
                 requests.get(RENDER_URL, timeout=10)
@@ -151,7 +151,7 @@ async def clear_queue_cmd(client, message):
 
 # --- মূল লজিক: ফাইল, পোস্ট বা ফরওয়ার্ড করা মেসেজ সেভ করা ---
 
-@bot.on_message(filters.incoming & (filters.channel | filters.group))
+@bot.on_message(filters.all & (filters.channel | filters.group))
 async def message_listener(client, message):
     try:
         source_id = str(message.chat.id)
@@ -163,9 +163,10 @@ async def message_listener(client, message):
             if config['count'] >= config['limit']:
                 return
 
-            scheduled_time = time.time() + config['delay']
+            # বর্তমান সময় + ডিলে (ফ্লোট হিসেবে রাখা হয়েছে নিখুঁত টাইমিংয়ের জন্য)
+            scheduled_time = float(time.time() + config['delay'])
             
-            # ডাটাবেসে মেসেজ সেভ (এটি ফরওয়ার্ড করা মেসেজও ডিটেক্ট করবে)
+            # ডাটাবেসে মেসেজ সেভ (এটি অরিজিনাল পোস্ট এবং ফরওয়ার্ড করা পোস্ট দুইটাই ধরবে)
             await queue_col.insert_one({
                 "source_id": source_id,
                 "target_id": config['target'],
@@ -173,18 +174,23 @@ async def message_listener(client, message):
                 "send_at": scheduled_time,
                 "status": "pending"
             })
-            logger.info(f"✅ Message {message.id} saved to DB from {source_id}")
+            logger.info(f"✅ Message {message.id} saved to DB from {source_id}. Scheduled at: {scheduled_time}")
     except Exception as e:
         logger.error(f"Listener Error: {e}")
 
 # --- ফরওয়ার্ডিং ওয়ার্কার (সিরিয়াল মেইনটেইন করে) ---
 
 async def forward_worker():
-    await bot.wait_for_connection()
+    # বট পুরোপুরি কানেক্ট হওয়া পর্যন্ত অপেক্ষা
+    while not bot.is_connected:
+        await asyncio.sleep(1)
+
+    logger.info("🚀 Forward Worker Started!")
+    
     while True:
         try:
             current_time = time.time()
-            # পেন্ডিং মেসেজ খোঁজা এবং message_id অনুযায়ী সিরিয়াল বজায় রাখা
+            # পেন্ডিং মেসেজ খোঁজা যা বর্তমান সময়ের চেয়ে সমান বা কম এবং message_id অনুযায়ী সর্ট করা
             cursor = queue_col.find({
                 "send_at": {"$lte": current_time},
                 "status": "pending"
@@ -192,34 +198,40 @@ async def forward_worker():
 
             async for task in cursor:
                 try:
-                    # অরিজিনাল ক্যাপশনসহ মেসেজ কপি করা
+                    # IDs must be integers for pyrogram
+                    t_id = int(task['target_id'])
+                    s_id = int(task['source_id'])
+                    m_id = int(task['message_id'])
+
+                    # copy_message ব্যবহার করা হয়েছে যাতে অরিজিনাল ক্যাপশন থাকে
                     await bot.copy_message(
-                        chat_id=int(task['target_id']),
-                        from_chat_id=int(task['source_id']),
-                        message_id=task['message_id']
+                        chat_id=t_id,
+                        from_chat_id=s_id,
+                        message_id=m_id
                     )
                     
-                    # সেভ করা টাস্ক ডিলিট করা এবং কাউন্ট বাড়ানো
+                    # সেভ করা টাস্ক ডিলিট করা এবং মেইন সেটিংসে কাউন্ট বাড়ানো
                     await queue_col.delete_one({"_id": task["_id"]})
                     await settings_col.update_one(
                         {"source": task['source_id']}, 
                         {"$inc": {"count": 1}}
                     )
                     
-                    logger.info(f"🚀 Forwarded: {task['message_id']} to {task['target_id']}")
+                    logger.info(f"📤 Forwarded: {m_id} from {s_id} to {t_id}")
                     await asyncio.sleep(3.0) # স্প্যাম প্রোটেকশন ডিলে
                     
                 except errors.FloodWait as e:
+                    logger.warning(f"FloodWait: Sleeping for {e.value}s")
                     await asyncio.sleep(e.value)
                 except Exception as e:
-                    logger.error(f"Forward Error: {e}")
-                    # মেসেজ ডিলিট হয়ে গেলে বা কোনো সমস্যা হলে কিউ থেকে রিমুভ
+                    logger.error(f"Forward Error for message {task.get('message_id')}: {e}")
+                    # যদি মেসেজ ডিলিট হয়ে যায় তবে কিউ থেকে রিমুভ যাতে লুপ না আটকায়
                     await queue_col.delete_one({"_id": task["_id"]})
 
         except Exception as e:
             logger.error(f"Worker Loop Error: {e}")
         
-        await asyncio.sleep(5)
+        await asyncio.sleep(5) # প্রতি ৫ সেকেন্ডে কিউ চেক করবে
 
 # --- অটো রিস্টার্ট এবং মেইন লজিক ---
 
@@ -237,6 +249,7 @@ async def start_all():
                 asyncio.create_task(self_pinger())
                 start_all.tasks_started = True
             
+            # বটকে সচল রাখা
             while bot.is_connected:
                 await asyncio.sleep(60)
                 
@@ -245,7 +258,7 @@ async def start_all():
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
-    # ১. ওয়েব সার্ভার চালু
+    # ১. ওয়েব সার্ভার আলাদা থ্রেডে চালু
     threading.Thread(target=run_web_server, daemon=True).start()
     
     # ২. ইভেন্ট লুপ রান
