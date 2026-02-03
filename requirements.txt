@@ -4,3 +4,9 @@ motor
 dnspython
 flask
 gunicorn
+pyrogram
+tgcrypto
+motor
+dnspython
+flask
+gunicorn
